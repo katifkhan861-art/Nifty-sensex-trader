@@ -1,0 +1,94 @@
+
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NIFTY SENSEX Trading Desk</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b1220;color:#f1f5f9;font-family:Arial,sans-serif;padding:18px}
+header{display:flex;justify-content:space-between;align-items:center}
+h1{font-size:23px}
+h1 span{color:#38bdf8}
+.status{color:#fbbf24;font-size:12px}
+.notice{background:#332b17;padding:13px;border-radius:12px;color:#fde68a;margin:18px 0;font-size:13px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.card{background:#172235;border:1px solid #29384e;border-radius:14px;padding:16px;margin-bottom:14px}
+small,.muted{color:#94a3b8}
+.price{font-size:25px;font-weight:bold;margin:14px 0}
+h2{font-size:17px}
+button{background:#263750;color:white;border:0;padding:12px;border-radius:9px;margin:4px;cursor:pointer}
+button.active{background:#0284c7}
+.tabs{display:flex;flex-wrap:wrap}
+.data{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
+.value{font-size:18px;font-weight:bold;margin-top:7px}
+footer{color:#94a3b8;text-align:center;font-size:12px;margin:25px 0}
+</style>
+</head>
+<body>
+<header>
+<h1>NIFTY <span>×</span> SENSEX</h1>
+<div class="status">● DEMO MODE</div>
+</header>
+
+<div class="notice">
+<strong>ध्यान दें:</strong> अभी Live Market Data जुड़ा नहीं है।
+यह शुरुआती Dashboard है। कोई असली Trading Signal नहीं है।
+</div>
+
+<div class="grid">
+<div class="card">
+<small>NIFTY 50</small>
+<div class="price">—</div>
+<div class="muted">Live price pending</div>
+</div>
+<div class="card">
+<small>SENSEX</small>
+<div class="price">—</div>
+<div class="muted">Live price pending</div>
+</div>
+</div>
+
+<div class="card">
+<h2>Market Analysis</h2>
+<div class="tabs">
+<button class="active" onclick="changeTF('15 Minutes',this)">15 MIN</button>
+<button onclick="changeTF('1 Hour',this)">1 HOUR</button>
+<button onclick="changeTF('Daily',this)">DAILY</button>
+</div>
+<h3 id="tf">15 Minutes Analysis</h3>
+<p class="muted">Trend, Support और Resistance का विश्लेषण Live Data जुड़ने के बाद होगा।</p>
+</div>
+
+<div class="card">
+<h2>CALL / PUT Trade Setup</h2>
+<div class="data">
+<div>Direction<div class="value">—</div></div>
+<div>Entry Price<div class="value">—</div></div>
+<div>Stop Loss<div class="value">—</div></div>
+<div>Target<div class="value">—</div></div>
+<div>Exit<div class="value">—</div></div>
+<div>Risk<div class="value">Pending</div></div>
+</div>
+<p class="muted">अभी कोई खरीदने या बेचने का सिग्नल उपलब्ध नहीं है।</p>
+</div>
+
+<div class="grid">
+<div class="card"><h2>Option Chain</h2><p class="muted">OI • PCR • Greeks</p></div>
+<div class="card"><h2>FII / DII</h2><p class="muted">Institutional Data</p></div>
+<div class="card"><h2>Market News</h2><p class="muted">Verified News</p></div>
+<div class="card"><h2>Risk Manager</h2><p class="muted">Position Size • Max Loss</p></div>
+</div>
+
+<footer>Paper Trading First • No Guaranteed Returns</footer>
+
+<script>
+function changeTF(name,button){
+document.getElementById('tf').innerText=name+' Analysis';
+document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
+button.classList.add('active');
+}
+</script>
+</body>
+</html>
