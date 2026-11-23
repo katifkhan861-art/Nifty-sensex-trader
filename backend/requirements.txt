@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+smartapi-python
+pyotp
+logzero
+websocket-client
+pandas
+numpy
+requests
+python-dotenv
