@@ -1,51 +1,80 @@
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, Query
+
+from pathlib import Path
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from market_data import get_market_status, get_analysis_data
-from indicators import calculate_indicators
-from signals import generate_signal
+from fastapi.responses import FileResponse
 
-app = FastAPI(title="NIFTY SENSEX Trading API", version="2.0.0")
-app.add_middleware(CORSMiddleware, allow_origins=["https://katifkhan861-art.github.io", "http://localhost:3000", "http://127.0.0.1:5500"], allow_methods=["GET"], allow_headers=["*"])
-TIMEFRAMES = {"15m": "15 Minutes", "1h": "1 Hour", "1d": "Daily"}
+app = FastAPI(title="NIFTY SENSEX Trading API")
 
-@app.get("/")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+
+FRONTEND_FILE = Path(__file__).resolve().parent.parent / "index.html"
+
+
+@app.get("/", include_in_schema=False)
 def home():
-    return {"message": "NIFTY SENSEX API is running", "version": "2.0.0", "docs": "/docs"}
+    if FRONTEND_FILE.exists():
+        return FileResponse(FRONTEND_FILE)
+    return {"message": "NIFTY SENSEX API is running"}
+
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
+
 @app.get("/api/status")
 def status():
-    return get_market_status()
+    return {
+        "mode": "DEMO",
+        "message": "Live data is not connected yet.",
+        "nifty": "DEMO",
+        "sensex": "DEMO",
+        "live_data": False
+    }
 
-@app.get("/api/market/analysis")
-def market_analysis(symbol: str = Query("NIFTY", pattern="^(NIFTY|SENSEX)$"), timeframe: str = Query("15m", pattern="^(15m|1h|1d)$")):
-    try:
-        payload = get_analysis_data(symbol, timeframe)
-        candles = payload.get("candles", [])
-        if not candles:
-            raise HTTPException(status_code=503, detail=payload.get("message", "Live candle data unavailable"))
-        indicators = calculate_indicators(candles)
-        if "error" in indicators:
-            raise HTTPException(status_code=422, detail=indicators["error"])
-        signal = generate_signal(indicators["close"], indicators["ema_20"], indicators["ema_50"], indicators["rsi"])
-        return {"symbol": symbol, "timeframe": timeframe, "timeframe_label": TIMEFRAMES[timeframe], "mode": "LIVE", "updated_at": datetime.now().astimezone().isoformat(), "price": indicators["close"], "indicators": indicators, "signal": signal, "candles": candles[-100:], "message": "Latest broker candle data. Verify all levels before trading."}
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"Market data unavailable: {str(exc)}")
 
 @app.get("/api/market/overview")
 def market_overview():
-    markets = {}
-    for symbol in ("NIFTY", "SENSEX"):
-        try:
-            data = get_analysis_data(symbol, "15m")
-            candles = data.get("candles", [])
-            markets[symbol] = {"price": candles[-1]["close"] if candles else None, "mode": "LIVE" if candles else "UNAVAILABLE"}
-        except Exception:
-            markets[symbol] = {"price": None, "mode": "UNAVAILABLE"}
-    return {"markets": markets, "updated_at": datetime.now().astimezone().isoformat()}
+    return {
+        "markets": {
+            "NIFTY": {"price": None, "mode": "DEMO"},
+            "SENSEX": {"price": None, "mode": "DEMO"}
+        }
+    }
+
+
+@app.get("/api/market/analysis")
+def market_analysis(symbol: str = "NIFTY", timeframe: str = "15m"):
+    labels = {
+        "15m": "15 Minute",
+        "1h": "1 Hour",
+        "1d": "Daily"
+    }
+
+    return {
+        "symbol": symbol.upper(),
+        "timeframe": timeframe,
+        "timeframe_label": labels.get(timeframe, timeframe),
+        "price": None,
+        "indicators": {
+            "ema_20": None,
+            "ema_50": None,
+            "rsi": None
+        },
+        "signal": {
+            "signal": "WAIT",
+            "direction": "NEUTRAL",
+            "entry": None,
+            "stop_loss": None,
+            "target": None,
+            "reason": "Live market data is not connected.",
+            "note": "Demo mode only. No trading signal."
+        },
+        "updated_at": None
+    }
