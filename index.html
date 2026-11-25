@@ -1,94 +1,15 @@
-
-<!DOCTYPE html>
-<html lang="hi">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>NIFTY SENSEX Trading Desk</title>
-<style>
-*{box-sizing:border-box}
-body{margin:0;background:#0b1220;color:#f1f5f9;font-family:Arial,sans-serif;padding:18px}
-header{display:flex;justify-content:space-between;align-items:center}
-h1{font-size:23px}
-h1 span{color:#38bdf8}
-.status{color:#fbbf24;font-size:12px}
-.notice{background:#332b17;padding:13px;border-radius:12px;color:#fde68a;margin:18px 0;font-size:13px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.card{background:#172235;border:1px solid #29384e;border-radius:14px;padding:16px;margin-bottom:14px}
-small,.muted{color:#94a3b8}
-.price{font-size:25px;font-weight:bold;margin:14px 0}
-h2{font-size:17px}
-button{background:#263750;color:white;border:0;padding:12px;border-radius:9px;margin:4px;cursor:pointer}
-button.active{background:#0284c7}
-.tabs{display:flex;flex-wrap:wrap}
-.data{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
-.value{font-size:18px;font-weight:bold;margin-top:7px}
-footer{color:#94a3b8;text-align:center;font-size:12px;margin:25px 0}
-</style>
-</head>
-<body>
-<header>
-<h1>NIFTY <span>×</span> SENSEX</h1>
-<div class="status">● DEMO MODE</div>
-</header>
-
-<div class="notice">
-<strong>ध्यान दें:</strong> अभी Live Market Data जुड़ा नहीं है।
-यह शुरुआती Dashboard है। कोई असली Trading Signal नहीं है।
-</div>
-
-<div class="grid">
-<div class="card">
-<small>NIFTY 50</small>
-<div class="price">—</div>
-<div class="muted">Live price pending</div>
-</div>
-<div class="card">
-<small>SENSEX</small>
-<div class="price">—</div>
-<div class="muted">Live price pending</div>
-</div>
-</div>
-
-<div class="card">
-<h2>Market Analysis</h2>
-<div class="tabs">
-<button class="active" onclick="changeTF('15 Minutes',this)">15 MIN</button>
-<button onclick="changeTF('1 Hour',this)">1 HOUR</button>
-<button onclick="changeTF('Daily',this)">DAILY</button>
-</div>
-<h3 id="tf">15 Minutes Analysis</h3>
-<p class="muted">Trend, Support और Resistance का विश्लेषण Live Data जुड़ने के बाद होगा।</p>
-</div>
-
-<div class="card">
-<h2>CALL / PUT Trade Setup</h2>
-<div class="data">
-<div>Direction<div class="value">—</div></div>
-<div>Entry Price<div class="value">—</div></div>
-<div>Stop Loss<div class="value">—</div></div>
-<div>Target<div class="value">—</div></div>
-<div>Exit<div class="value">—</div></div>
-<div>Risk<div class="value">Pending</div></div>
-</div>
-<p class="muted">अभी कोई खरीदने या बेचने का सिग्नल उपलब्ध नहीं है।</p>
-</div>
-
-<div class="grid">
-<div class="card"><h2>Option Chain</h2><p class="muted">OI • PCR • Greeks</p></div>
-<div class="card"><h2>FII / DII</h2><p class="muted">Institutional Data</p></div>
-<div class="card"><h2>Market News</h2><p class="muted">Verified News</p></div>
-<div class="card"><h2>Risk Manager</h2><p class="muted">Position Size • Max Loss</p></div>
-</div>
-
-<footer>Paper Trading First • No Guaranteed Returns</footer>
-
+<!doctype html><html lang="hi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NIFTY × SENSEX Trading Desk</title><style>
+*{box-sizing:border-box}body{margin:0;background:#0b1220;color:#e5edf8;font:15px Arial,sans-serif;padding:16px;max-width:980px;margin:auto}header,.row{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{font-size:24px}h1 span{color:#38bdf8}.muted,small{color:#9aabc1}.pill{font-size:12px;padding:6px 10px;border-radius:20px;background:#263750}.notice,.card{background:#172235;border:1px solid #29384e;border-radius:14px;padding:16px;margin:14px 0}.notice{color:#fcd98a;background:#332b17}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.price{font-size:28px;font-weight:bold;margin:12px 0}.tabs{display:flex;gap:8px;flex-wrap:wrap}button{background:#263750;color:white;border:0;padding:11px 14px;border-radius:9px;cursor:pointer}button.active{background:#0284c7}.metrics{display:grid;grid-template-columns:repeat(2,1fr);gap:15px}.value{font-weight:bold;font-size:19px;margin-top:6px;overflow-wrap:anywhere}.good{color:#4ade80}.bad{color:#f87171}.warn{color:#fbbf24}footer{text-align:center;color:#8ea0b8;font-size:12px;margin:28px 0}@media(max-width:520px){body{padding:10px}.grid{grid-template-columns:1fr}.price{font-size:24px}}
+</style></head><body><header><h1>NIFTY <span>×</span> SENSEX</h1><div id="status" class="pill">जाँच हो रही है…</div></header>
+<div class="notice" id="notice">Live डेटा के लिए Angel One API credentials Render में जोड़ना जरूरी है। बिना credentials नकली भाव या signal नहीं दिखाया जाएगा।</div>
+<div class="grid"><section class="card"><small>NIFTY 50</small><div class="price" id="nifty">—</div><div class="muted" id="niftyMode">डेटा उपलब्ध नहीं</div></section><section class="card"><small>SENSEX</small><div class="price" id="sensex">—</div><div class="muted" id="sensexMode">डेटा उपलब्ध नहीं</div></section></div>
+<section class="card"><div class="row"><h2>Market Analysis</h2><div class="tabs"><button class="active" data-tf="15m">15 MIN</button><button data-tf="1h">1 HOUR</button><button data-tf="1d">DAILY</button></div></div><div class="tabs"><button class="active" data-symbol="NIFTY">NIFTY</button><button data-symbol="SENSEX">SENSEX</button></div><p id="analysisStatus" class="muted">API status जाँचा जा रहा है।</p>
+<div class="metrics"><div>Current Price<div class="value" id="price">—</div></div><div>Trend / Signal<div class="value" id="signal">—</div></div><div>EMA 20<div class="value" id="ema20">—</div></div><div>EMA 50<div class="value" id="ema50">—</div></div><div>RSI<div class="value" id="rsi">—</div></div><div>Updated<div class="value" id="updated">—</div></div><div>Entry reference<div class="value" id="entry">—</div></div><div>Stop Loss reference<div class="value" id="sl">—</div></div><div>Target reference<div class="value" id="target">—</div></div></div><p id="reason" class="muted"></p><button id="refresh">Refresh Analysis</button></section>
+<section class="card"><h3>ज़रूरी जानकारी</h3><p class="muted">यह तकनीकी विश्लेषण है, guaranteed trading call नहीं। Entry/SL/Target index के स्तर हैं, option premium के नहीं। Option Chain, FII/DII और Greeks इस build में उपलब्ध नहीं हैं। पहले paper trading करें।</p></section><footer>Paper Trading First • यह ऐप कोई order place नहीं करता।</footer>
 <script>
-function changeTF(name,button){
-document.getElementById('tf').innerText=name+' Analysis';
-document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('active'));
-button.classList.add('active');
-}
-</script>
-</body>
-</html>
+const API="https://nifty-sensex-trader.onrender.com";let symbol="NIFTY",tf="15m";const $=id=>document.getElementById(id);function fmt(v){return v===null||v===undefined?"—":Number(v).toLocaleString("en-IN",{maximumFractionDigits:2})}
+async function loadStatus(){try{const r=await fetch(API+"/api/status");const d=await r.json();$("status").textContent=d.mode==="LIVE"?"● LIVE API":"● "+d.mode;$("status").className="pill "+(d.mode==="LIVE"?"good":"warn");$("notice").textContent=d.message}catch(e){$("status").textContent="API unavailable";$("notice").textContent="Backend से संपर्क नहीं हो पाया। Render service और API URL जाँचें।"}}
+async function loadOverview(){try{const r=await fetch(API+"/api/market/overview");const d=await r.json();for(const s of ["NIFTY","SENSEX"]){$(s.toLowerCase()).textContent=fmt(d.markets[s].price);$(s.toLowerCase()+"Mode").textContent=d.markets[s].mode}}catch(e){}}
+async function loadAnalysis(){$("analysisStatus").textContent="Live candle data लोड हो रहा है…";try{const r=await fetch(API+"/api/market/analysis?symbol="+symbol+"&timeframe="+tf);const d=await r.json();if(!r.ok)throw new Error(d.detail||"Data unavailable");$("price").textContent=fmt(d.price);$("signal").textContent=d.signal.signal;$("signal").className="value "+(d.signal.direction==="BULLISH"?"good":d.signal.direction==="BEARISH"?"bad":"warn");$("ema20").textContent=fmt(d.indicators.ema_20);$("ema50").textContent=fmt(d.indicators.ema_50);$("rsi").textContent=fmt(d.indicators.rsi);$("entry").textContent=fmt(d.signal.entry);$("sl").textContent=fmt(d.signal.stop_loss);$("target").textContent=fmt(d.signal.target);$("updated").textContent=new Date(d.updated_at).toLocaleString("en-IN");$("reason").textContent=(d.signal.reason||"")+(d.signal.note?" "+d.signal.note:"");$("analysisStatus").textContent=symbol+" • "+d.timeframe_label+" • LIVE"}catch(e){$("analysisStatus").textContent="डेटा उपलब्ध नहीं: "+e.message;$("price").textContent="—";$("signal").textContent="WAIT";for(const id of ["ema20","ema50","rsi","entry","sl","target"])$(id).textContent="—";$("reason").textContent="Credentials या broker response ठीक होने पर live analysis दिखेगा।"}}
+document.querySelectorAll("[data-tf]").forEach(b=>b.onclick=()=>{tf=b.dataset.tf;document.querySelectorAll("[data-tf]").forEach(x=>x.classList.toggle("active",x===b));loadAnalysis()});document.querySelectorAll("[data-symbol]").forEach(b=>b.onclick=()=>{symbol=b.dataset.symbol;document.querySelectorAll("[data-symbol]").forEach(x=>x.classList.toggle("active",x===b));loadAnalysis()});$("refresh").onclick=()=>{loadStatus();loadOverview();loadAnalysis()};loadStatus();loadOverview();loadAnalysis();
+</script></body></html>
