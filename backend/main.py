@@ -143,3 +143,4 @@ def market_analysis(
             status_code=502,
             detail=f"Market data unavailable: {str(error)}",
         )
+
