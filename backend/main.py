@@ -155,7 +155,10 @@ def get_institutional_summary():
             "pcr_status": data.get("angel_one", {}).get(
                 "status", "UNAVAILABLE"
             ),
-            "note": "FII/DII figures are daily cash-market data. PCR is a separate market-wide indicator.",
+            "note": (
+                "FII/DII figures are daily cash-market data. "
+                "PCR is a separate market-wide indicator."
+            ),
         }
 
     except Exception as error:
@@ -211,44 +214,58 @@ def combined_market_analysis(symbol: str = "NIFTY"):
         raise HTTPException(status_code=400, detail="Invalid symbol")
 
     try:
-        # Daily direction
         daily = analyze_timeframe(symbol, "1d")
-
-        # One-hour confirmation
         hourly = analyze_timeframe(symbol, "1h")
-
-        # Fifteen-minute entry setup
         fifteen = analyze_timeframe(symbol, "15m")
 
         institutional = get_institutional_summary()
 
         daily_direction = daily["direction"]
         hourly_direction = hourly["direction"]
+
+        daily_signal = daily["signal"].get("signal", "WAIT")
+        hourly_signal = hourly["signal"].get("signal", "WAIT")
         fifteen_signal = fifteen["signal"].get("signal", "WAIT")
 
         final_signal = "WAIT"
-        reason = "All timeframes do not confirm the same direction."
+        reason = (
+            "Daily, 1-hour aur 15-minute teeno ki "
+            "confirmation abhi poori nahi hai."
+        )
 
+        # CALL: all three timeframes must confirm
         if (
             daily_direction == "BULLISH"
+            and daily_signal == "CALL BIAS"
             and hourly_direction == "BULLISH"
+            and hourly_signal == "CALL BIAS"
             and fifteen_signal == "CALL BIAS"
         ):
             final_signal = "CALL BIAS"
-            reason = "Daily bullish, 1-hour bullish and 15-minute CALL confirmation."
+            reason = (
+                "Daily, 1-hour aur 15-minute teeno "
+                "CALL direction confirm kar rahe hain."
+            )
 
+        # PUT: all three timeframes must confirm
         elif (
             daily_direction == "BEARISH"
+            and daily_signal == "PUT BIAS"
             and hourly_direction == "BEARISH"
+            and hourly_signal == "PUT BIAS"
             and fifteen_signal == "PUT BIAS"
         ):
             final_signal = "PUT BIAS"
-            reason = "Daily bearish, 1-hour bearish and 15-minute PUT confirmation."
+            reason = (
+                "Daily, 1-hour aur 15-minute teeno "
+                "PUT direction confirm kar rahe hain."
+            )
 
         entry = None
         stop_loss = None
         target = None
 
+        # Entry levels are taken from 15-minute analysis only
         if final_signal in ["CALL BIAS", "PUT BIAS"]:
             entry = fifteen["signal"].get("entry")
             stop_loss = fifteen["signal"].get("stop_loss")
@@ -266,6 +283,27 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "stop_loss": stop_loss,
             "target": target,
             "reason": reason,
+            "confirmation": {
+                "daily": {
+                    "direction": daily_direction,
+                    "signal": daily_signal,
+                    "confirmed": (
+                        daily_direction == "BULLISH"
+                        and daily_signal == "CALL BIAS"
+                    ) or (
+                        daily_direction == "BEARISH"
+                        and daily_signal == "PUT BIAS"
+                    ),
+                },
+                "one_hour": {
+                    "direction": hourly_direction,
+                    "signal": hourly_signal,
+                },
+                "fifteen_minute": {
+                    "direction": fifteen["direction"],
+                    "signal": fifteen_signal,
+                },
+            },
             "timeframes": {
                 "daily": daily,
                 "one_hour": hourly,
@@ -274,8 +312,8 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "institutional": institutional,
             "risk_note": (
                 "Index levels only, not option premium. "
-                "Signals are preliminary; verify live prices, "
-                "risk and market conditions before trading."
+                "Signals are preliminary. Verify live data "
+                "and risk before trading."
             ),
             "updated_at": datetime.now(IST).isoformat(),
         }
