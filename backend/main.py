@@ -14,6 +14,7 @@ from market_data import (
 )
 from indicators import calculate_indicators
 from signals import generate_signal
+from institutional_data import get_institutional_data
 
 app = FastAPI(title="NIFTY SENSEX Trading API")
 
@@ -42,6 +43,7 @@ def health():
 @app.get("/api/status")
 def status():
     result = get_market_status()
+
     return {
         "mode": result.get("mode", "DEMO"),
         "message": result.get("message", "Connection check failed"),
@@ -61,6 +63,7 @@ def market_overview():
 
         if result.get("connected"):
             data = result.get("data") or {}
+
             markets[symbol] = {
                 "price": data.get("ltp"),
                 "mode": "BROKER_CONNECTED",
@@ -77,7 +80,7 @@ def market_overview():
 @app.get("/api/market/analysis")
 def market_analysis(
     symbol: str = "NIFTY",
-    timeframe: str = "15m"
+    timeframe: str = "15m",
 ):
     symbol = symbol.upper()
 
@@ -88,10 +91,16 @@ def market_analysis(
     }
 
     if symbol not in ["NIFTY", "SENSEX"]:
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid symbol",
+        )
 
     if timeframe not in labels:
-        raise HTTPException(status_code=400, detail="Invalid timeframe")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid timeframe",
+        )
 
     try:
         candles = get_historical_candles(symbol, timeframe)
@@ -131,7 +140,10 @@ def market_analysis(
             "signal": {
                 **signal,
                 "direction": direction,
-                "note": "Index levels only; not option premium. Verify before trading.",
+                "note": (
+                    "Index levels only; not option premium. "
+                    "Verify before trading."
+                ),
             },
             "updated_at": datetime.now(
                 ZoneInfo("Asia/Kolkata")
@@ -144,3 +156,14 @@ def market_analysis(
             detail=f"Market data unavailable: {str(error)}",
         )
 
+
+@app.get("/api/market/institutional")
+def institutional_data():
+    try:
+        return get_institutional_data()
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Institutional data unavailable: {str(error)}",
+        )
