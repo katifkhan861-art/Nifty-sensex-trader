@@ -16,6 +16,8 @@ from indicators import calculate_indicators
 from signals import generate_signal
 from institutional_data import get_institutional_data
 
+IST = ZoneInfo("Asia/Kolkata")
+
 app = FastAPI(title="NIFTY SENSEX Trading API")
 
 app.add_middleware(
@@ -63,7 +65,6 @@ def market_overview():
 
         if result.get("connected"):
             data = result.get("data") or {}
-
             markets[symbol] = {
                 "price": data.get("ltp"),
                 "mode": "BROKER_CONNECTED",
@@ -72,9 +73,97 @@ def market_overview():
             markets[symbol] = {
                 "price": None,
                 "mode": "DATA UNAVAILABLE",
+                "error": result.get("error"),
             }
 
     return {"markets": markets}
+
+
+def analyze_timeframe(symbol, timeframe):
+    candles = get_historical_candles(symbol, timeframe)
+    indicators = calculate_indicators(candles)
+
+    if "error" in indicators:
+        raise RuntimeError(indicators["error"])
+
+    price = indicators["close"]
+    ema20 = indicators["ema_20"]
+    ema50 = indicators["ema_50"]
+    rsi = indicators["rsi"]
+
+    signal = generate_signal(price, ema20, ema50, rsi)
+
+    if price > ema20 and ema20 > ema50:
+        direction = "BULLISH"
+    elif price < ema20 and ema20 < ema50:
+        direction = "BEARISH"
+    else:
+        direction = "NEUTRAL"
+
+    return {
+        "timeframe": timeframe,
+        "direction": direction,
+        "price": price,
+        "indicators": {
+            "ema_20": ema20,
+            "ema_50": ema50,
+            "rsi": rsi,
+        },
+        "signal": signal,
+    }
+
+
+def get_institutional_summary():
+    try:
+        data = get_institutional_data()
+        rows = data.get("fii_dii", {}).get("data", [])
+
+        fii_net = None
+        dii_net = None
+        report_date = None
+
+        for row in rows:
+            category = str(row.get("category", "")).upper()
+            net = float(row.get("net_value_cr") or 0)
+
+            if "FII" in category or "FPI" in category:
+                fii_net = net
+                report_date = row.get("date") or report_date
+
+            elif "DII" in category:
+                dii_net = net
+                report_date = row.get("date") or report_date
+
+        if fii_net is None or dii_net is None:
+            bias = "UNKNOWN"
+        elif fii_net > 0 and dii_net > 0:
+            bias = "POSITIVE"
+        elif fii_net < 0 and dii_net < 0:
+            bias = "NEGATIVE"
+        else:
+            bias = "MIXED"
+
+        return {
+            "status": data.get("fii_dii", {}).get(
+                "status", "UNAVAILABLE"
+            ),
+            "date": report_date,
+            "fii_net_cr": fii_net,
+            "dii_net_cr": dii_net,
+            "bias": bias,
+            "pcr": data.get("angel_one", {}).get("pcr", {}),
+            "pcr_status": data.get("angel_one", {}).get(
+                "status", "UNAVAILABLE"
+            ),
+            "note": "FII/DII figures are daily cash-market data. PCR is a separate market-wide indicator.",
+        }
+
+    except Exception as error:
+        return {
+            "status": "UNAVAILABLE",
+            "bias": "UNKNOWN",
+            "error": str(error),
+        }
 
 
 @app.get("/api/market/analysis")
@@ -91,69 +180,110 @@ def market_analysis(
     }
 
     if symbol not in ["NIFTY", "SENSEX"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid symbol",
-        )
+        raise HTTPException(status_code=400, detail="Invalid symbol")
 
     if timeframe not in labels:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid timeframe",
-        )
+        raise HTTPException(status_code=400, detail="Invalid timeframe")
 
     try:
-        candles = get_historical_candles(symbol, timeframe)
-
-        indicators = calculate_indicators(candles)
-
-        if "error" in indicators:
-            raise RuntimeError(indicators["error"])
-
-        price = indicators["close"]
-
-        signal = generate_signal(
-            price,
-            indicators["ema_20"],
-            indicators["ema_50"],
-            indicators["rsi"],
-        )
-
-        signal_name = signal.get("signal", "WAIT")
-
-        direction = (
-            "BULLISH" if signal_name == "CALL BIAS"
-            else "BEARISH" if signal_name == "PUT BIAS"
-            else "NEUTRAL"
-        )
+        result = analyze_timeframe(symbol, timeframe)
 
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "timeframe_label": labels[timeframe],
-            "price": price,
-            "indicators": {
-                "ema_20": indicators["ema_20"],
-                "ema_50": indicators["ema_50"],
-                "rsi": indicators["rsi"],
-            },
-            "signal": {
-                **signal,
-                "direction": direction,
-                "note": (
-                    "Index levels only; not option premium. "
-                    "Verify before trading."
-                ),
-            },
-            "updated_at": datetime.now(
-                ZoneInfo("Asia/Kolkata")
-            ).isoformat(),
+            **result,
+            "updated_at": datetime.now(IST).isoformat(),
         }
 
     except Exception as error:
         raise HTTPException(
             status_code=502,
             detail=f"Market data unavailable: {str(error)}",
+        )
+
+
+@app.get("/api/market/combined")
+def combined_market_analysis(symbol: str = "NIFTY"):
+    symbol = symbol.upper()
+
+    if symbol not in ["NIFTY", "SENSEX"]:
+        raise HTTPException(status_code=400, detail="Invalid symbol")
+
+    try:
+        # Daily direction
+        daily = analyze_timeframe(symbol, "1d")
+
+        # One-hour confirmation
+        hourly = analyze_timeframe(symbol, "1h")
+
+        # Fifteen-minute entry setup
+        fifteen = analyze_timeframe(symbol, "15m")
+
+        institutional = get_institutional_summary()
+
+        daily_direction = daily["direction"]
+        hourly_direction = hourly["direction"]
+        fifteen_signal = fifteen["signal"].get("signal", "WAIT")
+
+        final_signal = "WAIT"
+        reason = "All timeframes do not confirm the same direction."
+
+        if (
+            daily_direction == "BULLISH"
+            and hourly_direction == "BULLISH"
+            and fifteen_signal == "CALL BIAS"
+        ):
+            final_signal = "CALL BIAS"
+            reason = "Daily bullish, 1-hour bullish and 15-minute CALL confirmation."
+
+        elif (
+            daily_direction == "BEARISH"
+            and hourly_direction == "BEARISH"
+            and fifteen_signal == "PUT BIAS"
+        ):
+            final_signal = "PUT BIAS"
+            reason = "Daily bearish, 1-hour bearish and 15-minute PUT confirmation."
+
+        entry = None
+        stop_loss = None
+        target = None
+
+        if final_signal in ["CALL BIAS", "PUT BIAS"]:
+            entry = fifteen["signal"].get("entry")
+            stop_loss = fifteen["signal"].get("stop_loss")
+            target = fifteen["signal"].get("target")
+
+        return {
+            "symbol": symbol,
+            "signal": final_signal,
+            "direction": (
+                "BULLISH" if final_signal == "CALL BIAS"
+                else "BEARISH" if final_signal == "PUT BIAS"
+                else "NEUTRAL"
+            ),
+            "entry": entry,
+            "stop_loss": stop_loss,
+            "target": target,
+            "reason": reason,
+            "timeframes": {
+                "daily": daily,
+                "one_hour": hourly,
+                "fifteen_minute": fifteen,
+            },
+            "institutional": institutional,
+            "risk_note": (
+                "Index levels only, not option premium. "
+                "Signals are preliminary; verify live prices, "
+                "risk and market conditions before trading."
+            ),
+            "updated_at": datetime.now(IST).isoformat(),
+        }
+
+    except Exception as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Combined analysis unavailable: {str(error)}",
         )
 
 
