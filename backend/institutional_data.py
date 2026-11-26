@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import time
 import requests
 
-from smartapi_client import connect_angel
+from market_data import get_api, api_request
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -59,62 +59,25 @@ def fetch_angel_data():
         "status": "UNAVAILABLE",
         "pcr": {},
         "oi_buildup": {},
-        "error": None,
+        "note": "OI requests temporarily paused to reduce API rate limits."
     }
 
     try:
-        api = connect_angel()
+        api = get_api()
 
-        # PCR data
-        try:
-            response = api.putCallRatio()
+        response = api_request(
+            lambda: api.putCallRatio()
+        )
 
-            if response and response.get("status"):
-                for row in response.get("data") or []:
-                    symbol = str(
-                        row.get("tradingSymbol", "")
-                    ).upper()
+        for row in response.get("data") or []:
+            symbol = str(
+                row.get("tradingSymbol", "")
+            ).upper()
 
-                    if symbol.startswith(("NIFTY", "SENSEX")):
-                        result["pcr"][symbol] = row.get("pcr")
+            if symbol.startswith(("NIFTY", "SENSEX")):
+                result["pcr"][symbol] = row.get("pcr")
 
-        except Exception as error:
-            result["pcr_error"] = str(error)
-
-        # Open Interest buildup
-        buildup_types = [
-            "Long Built Up",
-            "Short Built Up",
-            "Long Unwinding",
-            "Short Covering",
-        ]
-
-        for buildup_type in buildup_types:
-            try:
-                response = api.oIBuildup({
-                    "expirytype": "NEAR",
-                    "datatype": buildup_type,
-                })
-
-                if response and response.get("status"):
-                    rows = response.get("data") or []
-                    result["oi_buildup"][buildup_type] = [
-                        row for row in rows
-                        if any(
-                            symbol in str(row).upper()
-                            for symbol in ("NIFTY", "SENSEX")
-                        )
-                    ]
-                else:
-                    result["oi_buildup"][buildup_type] = []
-
-            except Exception as error:
-                result["oi_buildup"][buildup_type] = []
-                result.setdefault("oi_errors", {})[
-                    buildup_type
-                ] = str(error)
-
-        if result["pcr"] or any(result["oi_buildup"].values()):
+        if result["pcr"]:
             result["status"] = "PARTIALLY_CONNECTED"
 
     except Exception as error:
@@ -126,7 +89,6 @@ def fetch_angel_data():
 def get_institutional_data():
     now = time.time()
 
-    # 5-minute cache
     if _cache["data"] and now - _cache["time"] < 300:
         return _cache["data"]
 
@@ -137,37 +99,32 @@ def get_institutional_data():
             "source": "NSE India",
             "frequency": "DAILY",
             "data": [],
-            "note": "NSE daily cash-market figures; not minute-by-minute.",
+            "note": "Daily cash-market figures, not minute-by-minute."
         },
         "angel_one": {},
         "participant_positions": {
             "status": "NOT_CONNECTED",
-            "note": (
-                "FII participant-wise Futures/Options long-short "
-                "data is a separate report and is not connected yet."
-            ),
+            "note": "FII participant-wise Futures/Options data is not connected."
         },
         "note": (
-            "PCR and OI are market-wide indicators. "
-            "They do not identify individual FII or DII trades."
-        ),
+            "PCR is a market-wide indicator, not individual FII/DII trading."
+        )
     }
 
     try:
-        fii_rows = fetch_fii_dii()
+        rows = fetch_fii_dii()
 
-        if fii_rows:
+        if rows:
             result["fii_dii"]["status"] = "CONNECTED"
-            result["fii_dii"]["data"] = fii_rows
+            result["fii_dii"]["data"] = rows
 
     except Exception as error:
         result["fii_dii"]["error"] = str(error)
 
     result["angel_one"] = fetch_angel_data()
-
     result["updated_at"] = datetime.now(IST).isoformat()
 
-    _cache["time"] = now
+    _cache["time"] = time.time()
     _cache["data"] = result
 
     return result
