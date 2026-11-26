@@ -1,6 +1,7 @@
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import re
 import time
 import requests
 
@@ -21,7 +22,21 @@ HEADERS = {
     "Referer": NSE_REPORT,
 }
 
+OI_BUILDUP_TYPES = {
+    "LONG_BUILT_UP": "Long Built Up",
+    "SHORT_BUILT_UP": "Short Built Up",
+    "SHORT_COVERING": "Short Covering",
+    "LONG_UNWINDING": "Long Unwinding",
+}
+
 _cache = {"time": 0, "data": None}
+
+
+def _number(value):
+    try:
+        return float(value) if value not in (None, "") else None
+    except (TypeError, ValueError):
+        return None
 
 
 def fetch_fii_dii():
@@ -46,38 +61,125 @@ def fetch_fii_dii():
         result.append({
             "category": category,
             "date": row.get("date"),
-            "buy_value_cr": float(row.get("buyValue") or 0),
-            "sell_value_cr": float(row.get("sellValue") or 0),
-            "net_value_cr": float(row.get("netValue") or 0),
+            "buy_value_cr": _number(row.get("buyValue")) or 0,
+            "sell_value_cr": _number(row.get("sellValue")) or 0,
+            "net_value_cr": _number(row.get("netValue")) or 0,
         })
 
     return result
+
+
+def _fetch_nifty_oi_buildup(api):
+    buildup = {}
+    errors = {}
+
+    for key, datatype in OI_BUILDUP_TYPES.items():
+        try:
+            response = api_request(
+                lambda datatype=datatype: api.oIBuildup({
+                    "expirytype": "NEAR",
+                    "datatype": datatype,
+                })
+            )
+
+            rows = response.get("data") or []
+            nifty_rows = []
+
+            for row in rows:
+                symbol = str(
+                    row.get("tradingSymbol", "")
+                ).upper()
+
+                if not re.match(r"^NIFTY\d", symbol):
+                    continue
+
+                nifty_rows.append({
+                    "symbol": symbol,
+                    "ltp": _number(row.get("ltp")),
+                    "price_change": _number(row.get("netChange")),
+                    "price_change_pct": _number(
+                        row.get("percentChange")
+                    ),
+                    "open_interest": _number(
+                        row.get("opnInterest")
+                    ),
+                    "oi_change": _number(
+                        row.get("netChangeOpnInterest")
+                    ),
+                })
+
+            buildup[key] = nifty_rows
+
+        except Exception as error:
+            buildup[key] = []
+            errors[key] = str(error)
+
+    return buildup, errors
 
 
 def fetch_angel_data():
     result = {
         "status": "UNAVAILABLE",
         "pcr": {},
+        "pcr_status": "UNAVAILABLE",
         "oi_buildup": {},
-        "note": "OI requests temporarily paused to reduce API rate limits."
+        "oi_buildup_status": "UNAVAILABLE",
+        "oi_buildup_errors": {},
+        "supported_underlyings": ["NIFTY"],
+        "note": (
+            "Angel One PCR and OI Buildup endpoints are NSE-only. "
+            "NIFTY index-futures data is filtered here; "
+            "SENSEX OI is not supplied."
+        ),
     }
 
     try:
         api = get_api()
 
-        response = api_request(
-            lambda: api.putCallRatio()
+        try:
+            response = api_request(
+                lambda: api.putCallRatio()
+            )
+
+            for row in response.get("data") or []:
+                symbol = str(
+                    row.get("tradingSymbol", "")
+                ).upper()
+
+                if re.match(r"^NIFTY\d", symbol):
+                    pcr = _number(row.get("pcr"))
+
+                    if pcr is not None:
+                        result["pcr"][symbol] = pcr
+
+            result["pcr_status"] = (
+                "CONNECTED"
+                if result["pcr"]
+                else "NO_NIFTY_DATA"
+            )
+
+        except Exception as error:
+            result["pcr_status"] = "ERROR"
+            result["pcr_error"] = str(error)
+
+        buildup, errors = _fetch_nifty_oi_buildup(api)
+
+        result["oi_buildup"] = buildup
+        result["oi_buildup_errors"] = errors
+
+        successful_types = sum(
+            1 for key in OI_BUILDUP_TYPES
+            if key in buildup and key not in errors
         )
 
-        for row in response.get("data") or []:
-            symbol = str(
-                row.get("tradingSymbol", "")
-            ).upper()
+        if successful_types == len(OI_BUILDUP_TYPES):
+            result["oi_buildup_status"] = "CONNECTED"
+        elif successful_types:
+            result["oi_buildup_status"] = "PARTIALLY_CONNECTED"
+        else:
+            result["oi_buildup_status"] = "ERROR"
 
-            if symbol.startswith(("NIFTY", "SENSEX")):
-                result["pcr"][symbol] = row.get("pcr")
-
-        if result["pcr"]:
+        if result["pcr"] or successful_types:
             result["status"] = "PARTIALLY_CONNECTED"
 
     except Exception as error:
@@ -94,6 +196,7 @@ def get_institutional_data():
 
     result = {
         "updated_at": datetime.now(IST).isoformat(),
+
         "fii_dii": {
             "status": "UNAVAILABLE",
             "source": "NSE India",
@@ -101,13 +204,22 @@ def get_institutional_data():
             "data": [],
             "note": "Daily cash-market figures, not minute-by-minute."
         },
+
         "angel_one": {},
+
         "participant_positions": {
             "status": "NOT_CONNECTED",
-            "note": "FII participant-wise Futures/Options data is not connected."
+            "note": (
+                "FII participant-wise Futures/Options "
+                "data is not connected."
+            )
         },
+
         "note": (
-            "PCR is a market-wide indicator, not individual FII/DII trading."
+            "PCR is a market-wide options indicator mapped "
+            "to futures symbols; it is not individual FII/DII trading. "
+            "OI Buildup is provided for NIFTY NSE contracts only, "
+            "not SENSEX."
         )
     }
 
