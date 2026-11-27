@@ -1,6 +1,6 @@
 
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import re
 
@@ -80,8 +80,69 @@ def market_overview():
     return {"markets": markets}
 
 
+def get_closed_candles(candles, timeframe):
+    """
+    Sirf completed candles ko analysis mein use karta hai.
+    Angel One candle timestamps ko candle start time maana gaya hai.
+    """
+
+    now = datetime.now(IST)
+
+    durations = {
+        "15m": timedelta(minutes=15),
+        "1h": timedelta(hours=1),
+    }
+
+    if timeframe not in ["15m", "1h", "1d"]:
+        raise ValueError("Unsupported timeframe")
+
+    closed = []
+
+    for candle in candles:
+        try:
+            candle_time = datetime.fromisoformat(
+                str(candle["time"]).replace("Z", "+00:00")
+            )
+
+            if candle_time.tzinfo is None:
+                candle_time = candle_time.replace(tzinfo=IST)
+            else:
+                candle_time = candle_time.astimezone(IST)
+
+            market_close = datetime.combine(
+                candle_time.date(),
+                time(15, 30),
+                tzinfo=IST,
+            )
+
+            if timeframe == "1d":
+                candle_end = market_close
+            else:
+                candle_end = min(
+                    candle_time + durations[timeframe],
+                    market_close,
+                )
+
+            if candle_end <= now:
+                closed.append(candle)
+
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    if not closed:
+        raise RuntimeError(
+            f"No completed candles available for {timeframe}"
+        )
+
+    return closed
+
+
 def analyze_timeframe(symbol, timeframe):
     candles = get_historical_candles(symbol, timeframe)
+
+    # Incomplete candle ko hatao
+    candles = get_closed_candles(candles, timeframe)
+
     indicators = calculate_indicators(candles)
 
     if "error" in indicators:
@@ -111,6 +172,7 @@ def analyze_timeframe(symbol, timeframe):
             "rsi": rsi,
         },
         "signal": signal,
+        "candle_confirmation": "CLOSED_CANDLES_ONLY",
     }
 
 
@@ -153,8 +215,6 @@ def get_institutional_summary(symbol):
         angel = data.get("angel_one", {})
         pcr_data = angel.get("pcr", {})
 
-        # Only exact NIFTY index futures PCR.
-        # Do not use stock, BANKNIFTY or FINNIFTY PCR as NIFTY PCR.
         nifty_pcr = None
         nifty_pcr_symbol = None
 
@@ -166,7 +226,6 @@ def get_institutional_summary(symbol):
                     break
 
         oi_data = angel.get("oi_buildup", {})
-
         oi_summary = {}
 
         for category in [
@@ -239,10 +298,16 @@ def market_analysis(
     }
 
     if symbol not in ["NIFTY", "SENSEX"]:
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid symbol",
+        )
 
     if timeframe not in labels:
-        raise HTTPException(status_code=400, detail="Invalid timeframe")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid timeframe",
+        )
 
     try:
         result = analyze_timeframe(symbol, timeframe)
@@ -267,7 +332,10 @@ def combined_market_analysis(symbol: str = "NIFTY"):
     symbol = symbol.upper()
 
     if symbol not in ["NIFTY", "SENSEX"]:
-        raise HTTPException(status_code=400, detail="Invalid symbol")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid symbol",
+        )
 
     try:
         daily = analyze_timeframe(symbol, "1d")
@@ -291,7 +359,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "abhi ek direction mein nahi hain."
         )
 
-        # All three timeframes must agree for CALL.
+        # CALL: teeno timeframe bullish aur signal CALL hona chahiye
         if (
             daily_direction == "BULLISH"
             and hourly_direction == "BULLISH"
@@ -306,7 +374,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "CALL direction confirm kar rahe hain."
             )
 
-        # All three timeframes must agree for PUT.
+        # PUT: teeno timeframe bearish aur signal PUT hona chahiye
         elif (
             daily_direction == "BEARISH"
             and hourly_direction == "BEARISH"
@@ -324,7 +392,10 @@ def combined_market_analysis(symbol: str = "NIFTY"):
         entry = None
         stop_loss = None
         target = None
-        exit_condition = "WAIT: clear confirmation ka intezar karein."
+
+        exit_condition = (
+            "WAIT: clear confirmation ka intezar karein."
+        )
 
         if final_signal in ["CALL BIAS", "PUT BIAS"]:
             entry = fifteen["signal"].get("entry")
@@ -335,15 +406,15 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 exit_condition = (
                     "Stop-loss hit hone par exit karein, "
                     "target par profit book karein, ya 15-minute "
-                    "candle EMA20 ke neeche close ho to position "
-                    "dobara evaluate karein."
+                    "candle EMA20 ke neeche close ho to "
+                    "position dobara evaluate karein."
                 )
             else:
                 exit_condition = (
                     "Stop-loss hit hone par exit karein, "
                     "target par profit book karein, ya 15-minute "
-                    "candle EMA20 ke upar close ho to position "
-                    "dobara evaluate karein."
+                    "candle EMA20 ke upar close ho to "
+                    "position dobara evaluate karein."
                 )
 
         confirmation = {
@@ -374,18 +445,24 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "target": target,
             "exit_condition": exit_condition,
             "reason": reason,
-
             "confirmation": confirmation,
-
             "institutional": institutional,
 
             "signal_method": {
                 "daily": "Overall market direction",
                 "one_hour": "Trend confirmation",
-                "fifteen_minute": "Entry and risk levels",
+                "fifteen_minute": (
+                    "Entry and risk levels using closed candles"
+                ),
                 "fii_dii": "Daily supporting context",
-                "pcr": "Supporting options context, not standalone trigger",
-                "oi_buildup": "Stock futures breadth context, not direct index trigger",
+                "pcr": (
+                    "Supporting options context, "
+                    "not standalone trigger"
+                ),
+                "oi_buildup": (
+                    "Stock futures breadth context, "
+                    "not direct index trigger"
+                ),
             },
 
             "timeframes": {
