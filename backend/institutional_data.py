@@ -1,7 +1,6 @@
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import re
 import time
 import requests
 
@@ -69,7 +68,7 @@ def fetch_fii_dii():
     return result
 
 
-def _fetch_nifty_oi_buildup(api):
+def _fetch_oi_buildup(api):
     buildup = {}
     errors = {}
     diagnostics = {}
@@ -93,17 +92,14 @@ def _fetch_nifty_oi_buildup(api):
                 ],
             }
 
-            nifty_rows = []
+            buildup[key] = []
 
             for row in rows:
                 symbol = str(
                     row.get("tradingSymbol", "")
                 ).upper()
 
-                if not re.match(r"^NIFTY\d", symbol):
-                    continue
-
-                nifty_rows.append({
+                buildup[key].append({
                     "symbol": symbol,
                     "ltp": _number(row.get("ltp")),
                     "price_change": _number(row.get("netChange")),
@@ -117,8 +113,6 @@ def _fetch_nifty_oi_buildup(api):
                         row.get("netChangeOpnInterest")
                     ),
                 })
-
-            buildup[key] = nifty_rows
 
         except Exception as error:
             buildup[key] = []
@@ -139,9 +133,8 @@ def fetch_angel_data():
         "oi_buildup_diagnostics": {},
         "supported_underlyings": ["NIFTY"],
         "note": (
-            "Angel One PCR and OI Buildup endpoints are NSE-only. "
-            "NIFTY contracts are filtered here; "
-            "SENSEX OI is not supplied by this implementation."
+            "PCR is mapped to available futures symbols. "
+            "OI Buildup includes all contracts returned by Angel One."
         ),
     }
 
@@ -159,24 +152,23 @@ def fetch_angel_data():
                     row.get("tradingSymbol", "")
                 ).upper()
 
-                if re.match(r"^NIFTY\d", symbol):
-                    pcr = _number(row.get("pcr"))
+                pcr = _number(row.get("pcr"))
 
-                    if pcr is not None:
-                        result["pcr"][symbol] = pcr
+                if symbol and pcr is not None:
+                    result["pcr"][symbol] = pcr
 
             result["pcr_status"] = (
                 "CONNECTED"
                 if result["pcr"]
-                else "NO_NIFTY_DATA"
+                else "NO_DATA"
             )
 
         except Exception as error:
             result["pcr_status"] = "ERROR"
             result["pcr_error"] = str(error)
 
-        # OI BUILDUP DATA
-        buildup, errors, diagnostics = _fetch_nifty_oi_buildup(api)
+        # ALL OI BUILDUP CONTRACTS
+        buildup, errors, diagnostics = _fetch_oi_buildup(api)
 
         result["oi_buildup"] = buildup
         result["oi_buildup_errors"] = errors
@@ -194,20 +186,19 @@ def fetch_angel_data():
 
         if available_types == len(OI_BUILDUP_TYPES):
             result["oi_buildup_status"] = "CONNECTED"
-
         elif available_types > 0:
             result["oi_buildup_status"] = "PARTIALLY_CONNECTED"
-
         elif successful_types == len(OI_BUILDUP_TYPES):
-            result["oi_buildup_status"] = "NO_NIFTY_DATA"
-
+            result["oi_buildup_status"] = "NO_DATA"
         elif successful_types > 0:
             result["oi_buildup_status"] = "PARTIALLY_CONNECTED"
-
         else:
             result["oi_buildup_status"] = "ERROR"
 
         if result["pcr"] or available_types:
+            result["status"] = "PARTIALLY_CONNECTED"
+
+        elif result["pcr_status"] == "CONNECTED":
             result["status"] = "PARTIALLY_CONNECTED"
 
     except Exception as error:
@@ -247,10 +238,9 @@ def get_institutional_data():
         },
 
         "note": (
-            "PCR is a market-wide options indicator "
-            "mapped to futures symbols; it is not individual "
-            "FII/DII trading. OI Buildup is filtered for "
-            "NIFTY NSE contracts only, not SENSEX."
+            "FII/DII values are daily cash-market data. "
+            "PCR and OI Buildup are separate market indicators. "
+            "Stock futures OI is not the same as NIFTY index OI."
         ),
     }
 
