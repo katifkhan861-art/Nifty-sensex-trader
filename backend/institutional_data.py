@@ -1,8 +1,10 @@
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import time
 import requests
+import csv
+import io
 
 from market_data import get_api, api_request
 
@@ -11,6 +13,11 @@ IST = ZoneInfo("Asia/Kolkata")
 NSE_HOME = "https://www.nseindia.com"
 NSE_REPORT = "https://www.nseindia.com/reports/fii-dii"
 NSE_API = "https://www.nseindia.com/api/fiidiiTradeReact"
+
+PARTICIPANT_URL = (
+    "https://archives.nseindia.com/content/nsccl/"
+    "fao_participant_oi_{date}.csv"
+)
 
 HEADERS = {
     "User-Agent": (
@@ -33,9 +40,18 @@ _cache = {"time": 0, "data": None}
 
 def _number(value):
     try:
-        return float(value) if value not in (None, "") else None
+        if value in (None, ""):
+            return None
+        return float(str(value).replace(",", "").strip())
     except (TypeError, ValueError):
         return None
+
+
+def _normalized(value):
+    return "".join(
+        ch.lower() for ch in str(value)
+        if ch.isalnum()
+    )
 
 
 def fetch_fii_dii():
@@ -66,6 +82,171 @@ def fetch_fii_dii():
         })
 
     return result
+
+
+def fetch_participant_positions():
+    session = requests.Session()
+    session.headers.update({
+        **HEADERS,
+        "Accept": "text/csv,application/csv,text/plain,*/*",
+    })
+
+    errors = []
+
+    # Aaj aur pichhle 7 calendar days ki files check karein.
+    today = datetime.now(IST).date()
+
+    for offset in range(8):
+        report_date = today - timedelta(days=offset)
+        date_string = report_date.strftime("%d%m%Y")
+
+        url = PARTICIPANT_URL.format(date=date_string)
+
+        try:
+            response = session.get(url, timeout=20)
+
+            if response.status_code != 200:
+                errors.append(
+                    f"{date_string}: HTTP {response.status_code}"
+                )
+                continue
+
+            content = response.content.decode(
+                "utf-8-sig", errors="replace"
+            ).strip()
+
+            if not content or content.startswith("<"):
+                errors.append(f"{date_string}: Invalid CSV")
+                continue
+
+            reader = csv.DictReader(io.StringIO(content))
+
+            if not reader.fieldnames:
+                errors.append(f"{date_string}: Missing CSV headers")
+                continue
+
+            rows = []
+
+            for raw_row in reader:
+                row = {
+                    _normalized(key): value
+                    for key, value in raw_row.items()
+                    if key is not None
+                }
+
+                participant = (
+                    row.get("clienttype")
+                    or row.get("participanttype")
+                    or row.get("participant")
+                    or ""
+                ).strip()
+
+                if not participant:
+                    continue
+
+                def get_value(*names):
+                    for name in names:
+                        value = _number(row.get(_normalized(name)))
+                        if value is not None:
+                            return value
+                    return 0
+
+                future_index_long = get_value(
+                    "Future Index Long"
+                )
+                future_index_short = get_value(
+                    "Future Index Short"
+                )
+                future_stock_long = get_value(
+                    "Future Stock Long"
+                )
+                future_stock_short = get_value(
+                    "Future Stock Short"
+                )
+
+                call_long = get_value(
+                    "Option Index Call Long"
+                )
+                put_long = get_value(
+                    "Option Index Put Long"
+                )
+                call_short = get_value(
+                    "Option Index Call Short"
+                )
+                put_short = get_value(
+                    "Option Index Put Short"
+                )
+
+                total_long = get_value(
+                    "Total Long Contracts"
+                )
+                total_short = get_value(
+                    "Total Short Contracts"
+                )
+
+                rows.append({
+                    "participant": participant.upper(),
+
+                    "future_index_long": future_index_long,
+                    "future_index_short": future_index_short,
+                    "net_index_futures": (
+                        future_index_long - future_index_short
+                    ),
+
+                    "future_stock_long": future_stock_long,
+                    "future_stock_short": future_stock_short,
+                    "net_stock_futures": (
+                        future_stock_long - future_stock_short
+                    ),
+
+                    "index_call_long": call_long,
+                    "index_put_long": put_long,
+                    "index_call_short": call_short,
+                    "index_put_short": put_short,
+
+                    "net_index_options": (
+                        call_long + put_long
+                        - call_short - put_short
+                    ),
+
+                    "total_long_contracts": total_long,
+                    "total_short_contracts": total_short,
+                    "net_total_contracts": (
+                        total_long - total_short
+                    ),
+                })
+
+            useful_rows = [
+                row for row in rows
+                if row["participant"] != "TOTAL"
+            ]
+
+            if useful_rows:
+                return {
+                    "status": "CONNECTED",
+                    "source": "NSE India",
+                    "report": "Participant-wise Open Interest",
+                    "date": report_date.isoformat(),
+                    "unit": "contracts",
+                    "data": useful_rows,
+                    "note": (
+                        "Daily participant-wise open interest. "
+                        "Not live data and not rupee cash flows."
+                    ),
+                }
+
+            errors.append(f"{date_string}: No participant rows")
+
+        except Exception as error:
+            errors.append(f"{date_string}: {str(error)}")
+
+    return {
+        "status": "NOT_CONNECTED",
+        "source": "NSE India",
+        "data": [],
+        "errors": errors[-5:],
+        "note": "Participant-wise CSV could not be retrieved.",
+    }
 
 
 def _fetch_oi_buildup(api):
@@ -141,7 +322,6 @@ def fetch_angel_data():
     try:
         api = get_api()
 
-        # PCR DATA
         try:
             response = api_request(
                 lambda: api.putCallRatio()
@@ -158,16 +338,13 @@ def fetch_angel_data():
                     result["pcr"][symbol] = pcr
 
             result["pcr_status"] = (
-                "CONNECTED"
-                if result["pcr"]
-                else "NO_DATA"
+                "CONNECTED" if result["pcr"] else "NO_DATA"
             )
 
         except Exception as error:
             result["pcr_status"] = "ERROR"
             result["pcr_error"] = str(error)
 
-        # ALL OI BUILDUP CONTRACTS
         buildup, errors, diagnostics = _fetch_oi_buildup(api)
 
         result["oi_buildup"] = buildup
@@ -196,9 +373,6 @@ def fetch_angel_data():
             result["oi_buildup_status"] = "ERROR"
 
         if result["pcr"] or available_types:
-            result["status"] = "PARTIALLY_CONNECTED"
-
-        elif result["pcr_status"] == "CONNECTED":
             result["status"] = "PARTIALLY_CONNECTED"
 
     except Exception as error:
@@ -231,15 +405,14 @@ def get_institutional_data():
 
         "participant_positions": {
             "status": "NOT_CONNECTED",
-            "note": (
-                "FII participant-wise Futures/Options "
-                "data is not connected."
-            ),
+            "source": "NSE India",
+            "data": [],
+            "note": "Participant-wise data is not connected.",
         },
 
         "note": (
             "FII/DII values are daily cash-market data. "
-            "PCR and OI Buildup are separate market indicators. "
+            "Participant positions are daily derivative contracts. "
             "Stock futures OI is not the same as NIFTY index OI."
         ),
     }
@@ -255,6 +428,12 @@ def get_institutional_data():
         result["fii_dii"]["error"] = str(error)
 
     result["angel_one"] = fetch_angel_data()
+
+    # NEW: NSE participant-wise positions
+    result["participant_positions"] = (
+        fetch_participant_positions()
+    )
+
     result["updated_at"] = datetime.now(IST).isoformat()
 
     _cache["time"] = time.time()
