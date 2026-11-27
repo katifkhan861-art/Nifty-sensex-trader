@@ -72,6 +72,7 @@ def fetch_fii_dii():
 def _fetch_nifty_oi_buildup(api):
     buildup = {}
     errors = {}
+    diagnostics = {}
 
     for key, datatype in OI_BUILDUP_TYPES.items():
         try:
@@ -83,6 +84,15 @@ def _fetch_nifty_oi_buildup(api):
             )
 
             rows = response.get("data") or []
+
+            diagnostics[key] = {
+                "api_rows_count": len(rows),
+                "sample_symbols": [
+                    str(row.get("tradingSymbol", "")).upper()
+                    for row in rows[:5]
+                ],
+            }
+
             nifty_rows = []
 
             for row in rows:
@@ -114,7 +124,7 @@ def _fetch_nifty_oi_buildup(api):
             buildup[key] = []
             errors[key] = str(error)
 
-    return buildup, errors
+    return buildup, errors, diagnostics
 
 
 def fetch_angel_data():
@@ -122,20 +132,23 @@ def fetch_angel_data():
         "status": "UNAVAILABLE",
         "pcr": {},
         "pcr_status": "UNAVAILABLE",
+        "pcr_error": None,
         "oi_buildup": {},
         "oi_buildup_status": "UNAVAILABLE",
         "oi_buildup_errors": {},
+        "oi_buildup_diagnostics": {},
         "supported_underlyings": ["NIFTY"],
         "note": (
             "Angel One PCR and OI Buildup endpoints are NSE-only. "
-            "NIFTY index-futures data is filtered here; "
-            "SENSEX OI is not supplied."
+            "NIFTY contracts are filtered here; "
+            "SENSEX OI is not supplied by this implementation."
         ),
     }
 
     try:
         api = get_api()
 
+        # PCR DATA
         try:
             response = api_request(
                 lambda: api.putCallRatio()
@@ -162,10 +175,12 @@ def fetch_angel_data():
             result["pcr_status"] = "ERROR"
             result["pcr_error"] = str(error)
 
-        buildup, errors = _fetch_nifty_oi_buildup(api)
+        # OI BUILDUP DATA
+        buildup, errors, diagnostics = _fetch_nifty_oi_buildup(api)
 
         result["oi_buildup"] = buildup
         result["oi_buildup_errors"] = errors
+        result["oi_buildup_diagnostics"] = diagnostics
 
         successful_types = sum(
             1 for key in OI_BUILDUP_TYPES
@@ -195,9 +210,6 @@ def fetch_angel_data():
         if result["pcr"] or available_types:
             result["status"] = "PARTIALLY_CONNECTED"
 
-        elif result["pcr_status"] == "CONNECTED":
-            result["status"] = "PARTIALLY_CONNECTED"
-
     except Exception as error:
         result["error"] = str(error)
 
@@ -218,7 +230,10 @@ def get_institutional_data():
             "source": "NSE India",
             "frequency": "DAILY",
             "data": [],
-            "note": "Daily cash-market figures, not minute-by-minute."
+            "note": (
+                "Daily cash-market figures, "
+                "not minute-by-minute."
+            ),
         },
 
         "angel_one": {},
@@ -228,15 +243,15 @@ def get_institutional_data():
             "note": (
                 "FII participant-wise Futures/Options "
                 "data is not connected."
-            )
+            ),
         },
 
         "note": (
-            "PCR is a market-wide options indicator mapped "
-            "to futures symbols; it is not individual FII/DII trading. "
-            "OI Buildup is provided for NIFTY NSE contracts only, "
-            "not SENSEX."
-        )
+            "PCR is a market-wide options indicator "
+            "mapped to futures symbols; it is not individual "
+            "FII/DII trading. OI Buildup is filtered for "
+            "NIFTY NSE contracts only, not SENSEX."
+        ),
     }
 
     try:
