@@ -83,7 +83,7 @@ def market_overview():
 def get_closed_candles(candles, timeframe):
     """
     Sirf completed candles ko analysis mein use karta hai.
-    Angel One candle timestamps ko candle start time maana gaya hai.
+    Angel One timestamps ko candle start time maana gaya hai.
     """
 
     now = datetime.now(IST)
@@ -140,7 +140,6 @@ def get_closed_candles(candles, timeframe):
 def analyze_timeframe(symbol, timeframe):
     candles = get_historical_candles(symbol, timeframe)
 
-    # Incomplete candle ko hatao
     candles = get_closed_candles(candles, timeframe)
 
     indicators = calculate_indicators(candles)
@@ -173,6 +172,112 @@ def analyze_timeframe(symbol, timeframe):
         },
         "signal": signal,
         "candle_confirmation": "CLOSED_CANDLES_ONLY",
+    }
+
+
+def safe_number(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def build_participant_summary(participant_data):
+    """
+    NSE participant-wise daily OI ka summary.
+    Net index futures aur net index options ko alag rakhta hai.
+
+    Net index options ko direct bullish/bearish signal nahi maana gaya,
+    kyunki combined call aur put positions directional interpretation
+    ke liye kaafi nahi hain.
+    """
+
+    if not isinstance(participant_data, dict):
+        return {
+            "status": "UNAVAILABLE",
+            "note": "Participant data unavailable.",
+        }
+
+    status = participant_data.get("status", "UNAVAILABLE")
+    rows = participant_data.get("data", []) or []
+
+    if status != "CONNECTED" or not rows:
+        return {
+            "status": status,
+            "date": participant_data.get("date"),
+            "participants": {},
+            "note": "Valid participant-wise data available nahi hai.",
+        }
+
+    participants = {}
+
+    for row in rows:
+        name = str(row.get("participant", "")).upper().strip()
+
+        if name not in ["FII", "DII", "PRO", "CLIENT"]:
+            continue
+
+        participants[name] = {
+            "net_index_futures": safe_number(
+                row.get("net_index_futures")
+            ),
+            "net_stock_futures": safe_number(
+                row.get("net_stock_futures")
+            ),
+            "net_index_options": safe_number(
+                row.get("net_index_options")
+            ),
+            "total_long_contracts": safe_number(
+                row.get("total_long_contracts")
+            ),
+            "total_short_contracts": safe_number(
+                row.get("total_short_contracts")
+            ),
+        }
+
+    fii = participants.get("FII", {})
+    fii_net_futures = fii.get("net_index_futures")
+
+    if fii_net_futures is None:
+        fii_futures_position = "UNKNOWN"
+    elif fii_net_futures > 0:
+        fii_futures_position = "NET_LONG"
+    elif fii_net_futures < 0:
+        fii_futures_position = "NET_SHORT"
+    else:
+        fii_futures_position = "NEUTRAL"
+
+    dii = participants.get("DII", {})
+    dii_net_futures = dii.get("net_index_futures")
+
+    if dii_net_futures is None:
+        dii_futures_position = "UNKNOWN"
+    elif dii_net_futures > 0:
+        dii_futures_position = "NET_LONG"
+    elif dii_net_futures < 0:
+        dii_futures_position = "NET_SHORT"
+    else:
+        dii_futures_position = "NEUTRAL"
+
+    return {
+        "status": "CONNECTED",
+        "date": participant_data.get("date"),
+        "unit": participant_data.get("unit", "contracts"),
+        "participants": participants,
+        "interpretation": {
+            "fii_index_futures": fii_futures_position,
+            "dii_index_futures": dii_futures_position,
+            "fii_net_index_futures": fii_net_futures,
+            "dii_net_index_futures": dii_net_futures,
+            "options_direction": "NOT_DETERMINED",
+        },
+        "note": (
+            "Participant-wise figures are daily aggregate derivative "
+            "positions. Index futures may include multiple indices; "
+            "they are not NIFTY-only or SENSEX-only positions. "
+            "Net index options combines calls and puts and is not "
+            "a standalone bullish/bearish indicator."
+        ),
     }
 
 
@@ -245,6 +350,11 @@ def get_institutional_summary(symbol):
                 ],
             }
 
+        participant_data = data.get("participant_positions", {})
+        participant_summary = build_participant_summary(
+            participant_data
+        )
+
         return {
             "fii_dii": {
                 "status": fii_data.get("status", "UNAVAILABLE"),
@@ -272,9 +382,8 @@ def get_institutional_summary(symbol):
                     "not direct NIFTY or SENSEX index OI."
                 ),
             },
-            "participant_positions": data.get(
-                "participant_positions", {}
-            ),
+            "participant_positions": participant_data,
+            "participant_summary": participant_summary,
         }
 
     except Exception as error:
@@ -359,7 +468,6 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "abhi ek direction mein nahi hain."
         )
 
-        # CALL: teeno timeframe bullish aur signal CALL hona chahiye
         if (
             daily_direction == "BULLISH"
             and hourly_direction == "BULLISH"
@@ -374,7 +482,6 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "CALL direction confirm kar rahe hain."
             )
 
-        # PUT: teeno timeframe bearish aur signal PUT hona chahiye
         elif (
             daily_direction == "BEARISH"
             and hourly_direction == "BEARISH"
@@ -463,6 +570,10 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                     "Stock futures breadth context, "
                     "not direct index trigger"
                 ),
+                "participant_positions": (
+                    "Daily participant-wise derivative positioning. "
+                    "Supporting context only, not a standalone signal."
+                ),
             },
 
             "timeframes": {
@@ -476,7 +587,9 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "not option premium. These are analytical levels, "
                 "not guaranteed outcomes. Confirm live price, "
                 "liquidity and risk before trading. "
-                "Exit conditions require manual monitoring."
+                "Participant positions are daily aggregate data "
+                "and may not represent NIFTY-only or SENSEX-only "
+                "positions. Exit conditions require manual monitoring."
             ),
 
             "updated_at": datetime.now(IST).isoformat(),
