@@ -2,6 +2,7 @@
 from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -113,10 +114,12 @@ def analyze_timeframe(symbol, timeframe):
     }
 
 
-def get_institutional_summary():
+def get_institutional_summary(symbol):
     try:
         data = get_institutional_data()
-        rows = data.get("fii_dii", {}).get("data", [])
+
+        fii_data = data.get("fii_dii", {})
+        rows = fii_data.get("data", [])
 
         fii_net = None
         dii_net = None
@@ -124,7 +127,11 @@ def get_institutional_summary():
 
         for row in rows:
             category = str(row.get("category", "")).upper()
-            net = float(row.get("net_value_cr") or 0)
+
+            try:
+                net = float(row.get("net_value_cr") or 0)
+            except (TypeError, ValueError):
+                continue
 
             if "FII" in category or "FPI" in category:
                 fii_net = net
@@ -135,36 +142,85 @@ def get_institutional_summary():
                 report_date = row.get("date") or report_date
 
         if fii_net is None or dii_net is None:
-            bias = "UNKNOWN"
+            fii_dii_bias = "UNKNOWN"
         elif fii_net > 0 and dii_net > 0:
-            bias = "POSITIVE"
+            fii_dii_bias = "BOTH_BUYING"
         elif fii_net < 0 and dii_net < 0:
-            bias = "NEGATIVE"
+            fii_dii_bias = "BOTH_SELLING"
         else:
-            bias = "MIXED"
+            fii_dii_bias = "MIXED"
+
+        angel = data.get("angel_one", {})
+        pcr_data = angel.get("pcr", {})
+
+        # Only exact NIFTY index futures PCR.
+        # Do not use stock, BANKNIFTY or FINNIFTY PCR as NIFTY PCR.
+        nifty_pcr = None
+        nifty_pcr_symbol = None
+
+        if symbol == "NIFTY":
+            for pcr_symbol, value in pcr_data.items():
+                if re.match(r"^NIFTY\d.*FUT$", pcr_symbol.upper()):
+                    nifty_pcr = value
+                    nifty_pcr_symbol = pcr_symbol
+                    break
+
+        oi_data = angel.get("oi_buildup", {})
+
+        oi_summary = {}
+
+        for category in [
+            "LONG_BUILT_UP",
+            "SHORT_BUILT_UP",
+            "SHORT_COVERING",
+            "LONG_UNWINDING",
+        ]:
+            records = oi_data.get(category, []) or []
+
+            oi_summary[category] = {
+                "count": len(records),
+                "symbols": [
+                    item.get("symbol")
+                    for item in records
+                    if item.get("symbol")
+                ],
+            }
 
         return {
-            "status": data.get("fii_dii", {}).get(
-                "status", "UNAVAILABLE"
-            ),
-            "date": report_date,
-            "fii_net_cr": fii_net,
-            "dii_net_cr": dii_net,
-            "bias": bias,
-            "pcr": data.get("angel_one", {}).get("pcr", {}),
-            "pcr_status": data.get("angel_one", {}).get(
-                "status", "UNAVAILABLE"
-            ),
-            "note": (
-                "FII/DII figures are daily cash-market data. "
-                "PCR is a separate market-wide indicator."
+            "fii_dii": {
+                "status": fii_data.get("status", "UNAVAILABLE"),
+                "date": report_date,
+                "fii_net_cr": fii_net,
+                "dii_net_cr": dii_net,
+                "bias": fii_dii_bias,
+            },
+            "pcr": {
+                "status": (
+                    angel.get("pcr_status", "UNAVAILABLE")
+                    if symbol == "NIFTY"
+                    else "NOT_APPLICABLE"
+                ),
+                "symbol": nifty_pcr_symbol,
+                "value": nifty_pcr,
+            },
+            "oi_buildup": {
+                "status": angel.get(
+                    "oi_buildup_status", "UNAVAILABLE"
+                ),
+                "categories": oi_summary,
+                "note": (
+                    "These are stock futures buildup lists, "
+                    "not direct NIFTY or SENSEX index OI."
+                ),
+            },
+            "participant_positions": data.get(
+                "participant_positions", {}
             ),
         }
 
     except Exception as error:
         return {
             "status": "UNAVAILABLE",
-            "bias": "UNKNOWN",
             "error": str(error),
         }
 
@@ -218,26 +274,29 @@ def combined_market_analysis(symbol: str = "NIFTY"):
         hourly = analyze_timeframe(symbol, "1h")
         fifteen = analyze_timeframe(symbol, "15m")
 
-        institutional = get_institutional_summary()
+        institutional = get_institutional_summary(symbol)
 
         daily_direction = daily["direction"]
         hourly_direction = hourly["direction"]
+        fifteen_direction = fifteen["direction"]
 
         daily_signal = daily["signal"].get("signal", "WAIT")
         hourly_signal = hourly["signal"].get("signal", "WAIT")
         fifteen_signal = fifteen["signal"].get("signal", "WAIT")
 
         final_signal = "WAIT"
+
         reason = (
-            "Daily, 1-hour aur 15-minute teeno ki "
-            "confirmation abhi poori nahi hai."
+            "Daily, 1-hour aur 15-minute confirmation "
+            "abhi ek direction mein nahi hain."
         )
 
-        # CALL: all three timeframes must confirm
+        # All three timeframes must agree for CALL.
         if (
             daily_direction == "BULLISH"
-            and daily_signal == "CALL BIAS"
             and hourly_direction == "BULLISH"
+            and fifteen_direction == "BULLISH"
+            and daily_signal == "CALL BIAS"
             and hourly_signal == "CALL BIAS"
             and fifteen_signal == "CALL BIAS"
         ):
@@ -247,11 +306,12 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "CALL direction confirm kar rahe hain."
             )
 
-        # PUT: all three timeframes must confirm
+        # All three timeframes must agree for PUT.
         elif (
             daily_direction == "BEARISH"
-            and daily_signal == "PUT BIAS"
             and hourly_direction == "BEARISH"
+            and fifteen_direction == "BEARISH"
+            and daily_signal == "PUT BIAS"
             and hourly_signal == "PUT BIAS"
             and fifteen_signal == "PUT BIAS"
         ):
@@ -264,12 +324,42 @@ def combined_market_analysis(symbol: str = "NIFTY"):
         entry = None
         stop_loss = None
         target = None
+        exit_condition = "WAIT: clear confirmation ka intezar karein."
 
-        # Entry levels are taken from 15-minute analysis only
         if final_signal in ["CALL BIAS", "PUT BIAS"]:
             entry = fifteen["signal"].get("entry")
             stop_loss = fifteen["signal"].get("stop_loss")
             target = fifteen["signal"].get("target")
+
+            if final_signal == "CALL BIAS":
+                exit_condition = (
+                    "Stop-loss hit hone par exit karein, "
+                    "target par profit book karein, ya 15-minute "
+                    "candle EMA20 ke neeche close ho to position "
+                    "dobara evaluate karein."
+                )
+            else:
+                exit_condition = (
+                    "Stop-loss hit hone par exit karein, "
+                    "target par profit book karein, ya 15-minute "
+                    "candle EMA20 ke upar close ho to position "
+                    "dobara evaluate karein."
+                )
+
+        confirmation = {
+            "daily": {
+                "direction": daily_direction,
+                "signal": daily_signal,
+            },
+            "one_hour": {
+                "direction": hourly_direction,
+                "signal": hourly_signal,
+            },
+            "fifteen_minute": {
+                "direction": fifteen_direction,
+                "signal": fifteen_signal,
+            },
+        }
 
         return {
             "symbol": symbol,
@@ -282,39 +372,36 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             "entry": entry,
             "stop_loss": stop_loss,
             "target": target,
+            "exit_condition": exit_condition,
             "reason": reason,
-            "confirmation": {
-                "daily": {
-                    "direction": daily_direction,
-                    "signal": daily_signal,
-                    "confirmed": (
-                        daily_direction == "BULLISH"
-                        and daily_signal == "CALL BIAS"
-                    ) or (
-                        daily_direction == "BEARISH"
-                        and daily_signal == "PUT BIAS"
-                    ),
-                },
-                "one_hour": {
-                    "direction": hourly_direction,
-                    "signal": hourly_signal,
-                },
-                "fifteen_minute": {
-                    "direction": fifteen["direction"],
-                    "signal": fifteen_signal,
-                },
+
+            "confirmation": confirmation,
+
+            "institutional": institutional,
+
+            "signal_method": {
+                "daily": "Overall market direction",
+                "one_hour": "Trend confirmation",
+                "fifteen_minute": "Entry and risk levels",
+                "fii_dii": "Daily supporting context",
+                "pcr": "Supporting options context, not standalone trigger",
+                "oi_buildup": "Stock futures breadth context, not direct index trigger",
             },
+
             "timeframes": {
                 "daily": daily,
                 "one_hour": hourly,
                 "fifteen_minute": fifteen,
             },
-            "institutional": institutional,
+
             "risk_note": (
-                "Index levels only, not option premium. "
-                "Signals are preliminary. Verify live data "
-                "and risk before trading."
+                "Entry, target and stop-loss are index levels, "
+                "not option premium. These are analytical levels, "
+                "not guaranteed outcomes. Confirm live price, "
+                "liquidity and risk before trading. "
+                "Exit conditions require manual monitoring."
             ),
+
             "updated_at": datetime.now(IST).isoformat(),
         }
 
