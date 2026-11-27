@@ -172,14 +172,30 @@ def fetch_angel_data():
             if key in buildup and key not in errors
         )
 
-        if successful_types == len(OI_BUILDUP_TYPES):
+        available_types = sum(
+            1 for key in OI_BUILDUP_TYPES
+            if buildup.get(key)
+        )
+
+        if available_types == len(OI_BUILDUP_TYPES):
             result["oi_buildup_status"] = "CONNECTED"
-        elif successful_types:
+
+        elif available_types > 0:
             result["oi_buildup_status"] = "PARTIALLY_CONNECTED"
+
+        elif successful_types == len(OI_BUILDUP_TYPES):
+            result["oi_buildup_status"] = "NO_NIFTY_DATA"
+
+        elif successful_types > 0:
+            result["oi_buildup_status"] = "PARTIALLY_CONNECTED"
+
         else:
             result["oi_buildup_status"] = "ERROR"
 
-        if result["pcr"] or successful_types:
+        if result["pcr"] or available_types:
+            result["status"] = "PARTIALLY_CONNECTED"
+
+        elif result["pcr_status"] == "CONNECTED":
             result["status"] = "PARTIALLY_CONNECTED"
 
     except Exception as error:
