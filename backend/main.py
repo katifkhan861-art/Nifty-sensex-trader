@@ -49,20 +49,94 @@ def health():
     }
 
 
+def safe_number(value):
+    try:
+        number = float(value)
+
+        if not math.isfinite(number):
+            return None
+
+        return number
+
+    except (TypeError, ValueError):
+        return None
+
+
 @app.get("/api/status")
 def status():
-    result = get_market_status()
+    broker = get_market_status()
+
+    now = datetime.now(IST)
+    current_time = now.time()
+
+    # Basic weekday and market-hours check.
+    # Exchange holidays are not checked here.
+    market_session_open = (
+        now.weekday() < 5
+        and time(9, 15) <= current_time <= time(15, 30)
+    )
+
+    markets = {}
+
+    for symbol in ["NIFTY", "SENSEX"]:
+        try:
+            result = get_market_quote(symbol)
+            data = result.get("data") or {}
+
+            price = safe_number(data.get("ltp"))
+
+            connected = (
+                result.get("connected", False)
+                and price is not None
+                and price > 0
+            )
+
+            markets[symbol] = {
+                "status": (
+                    "QUOTE_RECEIVED"
+                    if connected
+                    else "DATA_UNAVAILABLE"
+                ),
+                "price": price,
+            }
+
+        except Exception as error:
+            markets[symbol] = {
+                "status": "ERROR",
+                "price": None,
+                "error": str(error),
+            }
+
+    broker_connected = bool(broker.get("connected", False))
+
+    quote_data_available = all(
+        markets[symbol]["status"] == "QUOTE_RECEIVED"
+        for symbol in ["NIFTY", "SENSEX"]
+    )
 
     return {
-        "mode": result.get("mode", "DEMO"),
-        "message": result.get(
+        "mode": broker.get("mode", "DEMO"),
+        "message": broker.get(
             "message",
-            "Connection check failed"
+            "Connection check completed"
         ),
-        "nifty": result.get("mode", "DEMO"),
-        "sensex": result.get("mode", "DEMO"),
-        "live_data": False,
-        "broker_connected": result.get("connected", False),
+        "nifty": markets["NIFTY"]["status"],
+        "sensex": markets["SENSEX"]["status"],
+        "markets": markets,
+        "broker_connected": broker_connected,
+        "market_session_open": market_session_open,
+        "quote_data_available": quote_data_available,
+        "live_data": (
+            broker_connected
+            and quote_data_available
+            and market_session_open
+        ),
+        "updated_at": now.isoformat(),
+        "note": (
+            "Market session is based on weekday and clock time. "
+            "Exchange holidays and quote timestamp freshness "
+            "are not independently verified."
+        ),
     }
 
 
@@ -77,7 +151,7 @@ def market_overview():
             data = result.get("data") or {}
 
             markets[symbol] = {
-                "price": data.get("ltp"),
+                "price": safe_number(data.get("ltp")),
                 "mode": "BROKER_CONNECTED",
             }
         else:
@@ -169,7 +243,6 @@ def analyze_timeframe(symbol, timeframe):
     atr = indicators["atr"]
     adx = indicators["adx"]
 
-    # New signal engine
     signal = generate_signal(
         price=price,
         ema_20=ema20,
@@ -181,7 +254,6 @@ def analyze_timeframe(symbol, timeframe):
         adx=adx,
     )
 
-    # Direction confirmation
     if (
         price > ema20
         and ema20 > ema50
@@ -203,7 +275,6 @@ def analyze_timeframe(symbol, timeframe):
         "timeframe": timeframe,
         "direction": direction,
         "price": price,
-
         "indicators": {
             "ema_20": ema20,
             "ema_50": ema50,
@@ -213,23 +284,9 @@ def analyze_timeframe(symbol, timeframe):
             "atr": atr,
             "adx": adx,
         },
-
         "signal": signal,
         "candle_confirmation": "CLOSED_CANDLES_ONLY",
     }
-
-
-def safe_number(value):
-    try:
-        number = float(value)
-
-        if not math.isfinite(number):
-            return None
-
-        return number
-
-    except (TypeError, ValueError):
-        return None
 
 
 def build_participant_summary(participant_data):
@@ -244,12 +301,16 @@ def build_participant_summary(participant_data):
             "note": "Participant data unavailable.",
         }
 
-    status = participant_data.get("status", "UNAVAILABLE")
+    status_value = participant_data.get(
+        "status",
+        "UNAVAILABLE"
+    )
+
     rows = participant_data.get("data", []) or []
 
-    if status != "CONNECTED" or not rows:
+    if status_value != "CONNECTED" or not rows:
         return {
-            "status": status,
+            "status": status_value,
             "date": participant_data.get("date"),
             "participants": {},
             "note": "Valid participant-wise data available nahi hai.",
@@ -306,7 +367,6 @@ def build_participant_summary(participant_data):
         "date": participant_data.get("date"),
         "unit": participant_data.get("unit", "contracts"),
         "participants": participants,
-
         "interpretation": {
             "fii_index_futures": get_position(fii_net),
             "dii_index_futures": get_position(dii_net),
@@ -314,7 +374,6 @@ def build_participant_summary(participant_data):
             "dii_net_index_futures": dii_net,
             "options_direction": "NOT_DETERMINED",
         },
-
         "note": (
             "Participant-wise figures are daily aggregate "
             "derivative positions. Index futures may include "
@@ -402,7 +461,8 @@ def get_institutional_summary(symbol):
             }
 
         participant_data = data.get(
-            "participant_positions", {}
+            "participant_positions",
+            {}
         )
 
         participant_summary = build_participant_summary(
@@ -420,7 +480,6 @@ def get_institutional_summary(symbol):
                 "dii_net_cr": dii_net,
                 "bias": fii_dii_bias,
             },
-
             "pcr": {
                 "status": (
                     angel.get("pcr_status", "UNAVAILABLE")
@@ -430,7 +489,6 @@ def get_institutional_summary(symbol):
                 "symbol": nifty_pcr_symbol,
                 "value": nifty_pcr,
             },
-
             "oi_buildup": {
                 "status": angel.get(
                     "oi_buildup_status",
@@ -442,7 +500,6 @@ def get_institutional_summary(symbol):
                     "not direct NIFTY or SENSEX index OI."
                 ),
             },
-
             "participant_positions": participant_data,
             "participant_summary": participant_summary,
         }
@@ -595,12 +652,10 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "direction": daily_direction,
                 "signal": daily_signal,
             },
-
             "one_hour": {
                 "direction": hourly_direction,
                 "signal": hourly_signal,
             },
-
             "fifteen_minute": {
                 "direction": fifteen_direction,
                 "signal": fifteen_signal,
@@ -609,26 +664,20 @@ def combined_market_analysis(symbol: str = "NIFTY"):
 
         return {
             "symbol": symbol,
-
             "signal": final_signal,
-
             "direction": (
                 "BULLISH" if final_signal == "CALL BIAS"
                 else "BEARISH" if final_signal == "PUT BIAS"
                 else "NEUTRAL"
             ),
-
             "entry": entry,
             "stop_loss": stop_loss,
             "target": target,
             "risk_reward": risk_reward,
-
             "exit_condition": exit_condition,
             "reason": reason,
-
             "confirmation": confirmation,
             "institutional": institutional,
-
             "signal_method": {
                 "daily": "Overall market direction",
                 "one_hour": "Trend confirmation",
@@ -654,13 +703,11 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                     "Supporting context only."
                 ),
             },
-
             "timeframes": {
                 "daily": daily,
                 "one_hour": hourly,
                 "fifteen_minute": fifteen,
             },
-
             "risk_note": (
                 "Entry, target and stop-loss are index levels, "
                 "not option premium. These are analytical levels, "
@@ -670,7 +717,6 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "and may not represent NIFTY-only or SENSEX-only "
                 "positions. Exit conditions require manual monitoring."
             ),
-
             "updated_at": datetime.now(IST).isoformat(),
         }
 
