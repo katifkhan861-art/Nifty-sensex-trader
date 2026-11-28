@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 import re
+import math
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +17,7 @@ from market_data import (
 from indicators import calculate_indicators
 from signals import generate_signal
 from institutional_data import get_institutional_data
+
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -35,12 +37,16 @@ FRONTEND_FILE = Path(__file__).resolve().parent.parent / "index.html"
 def home():
     if FRONTEND_FILE.exists():
         return FileResponse(FRONTEND_FILE)
+
     return {"message": "NIFTY SENSEX API is running"}
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "service": "NIFTY SENSEX Trading API",
+    }
 
 
 @app.get("/api/status")
@@ -49,7 +55,10 @@ def status():
 
     return {
         "mode": result.get("mode", "DEMO"),
-        "message": result.get("message", "Connection check failed"),
+        "message": result.get(
+            "message",
+            "Connection check failed"
+        ),
         "nifty": result.get("mode", "DEMO"),
         "sensex": result.get("mode", "DEMO"),
         "live_data": False,
@@ -66,6 +75,7 @@ def market_overview():
 
         if result.get("connected"):
             data = result.get("data") or {}
+
             markets[symbol] = {
                 "price": data.get("ltp"),
                 "mode": "BROKER_CONNECTED",
@@ -77,12 +87,15 @@ def market_overview():
                 "error": result.get("error"),
             }
 
-    return {"markets": markets}
+    return {
+        "markets": markets,
+        "updated_at": datetime.now(IST).isoformat(),
+    }
 
 
 def get_closed_candles(candles, timeframe):
     """
-    Sirf completed candles ko analysis mein use karta hai.
+    Analysis mein sirf completed candles use karta hai.
     Angel One timestamps ko candle start time maana gaya hai.
     """
 
@@ -151,13 +164,38 @@ def analyze_timeframe(symbol, timeframe):
     ema20 = indicators["ema_20"]
     ema50 = indicators["ema_50"]
     rsi = indicators["rsi"]
+    macd = indicators["macd"]
+    macd_signal = indicators["macd_signal"]
+    atr = indicators["atr"]
+    adx = indicators["adx"]
 
-    signal = generate_signal(price, ema20, ema50, rsi)
+    # New signal engine
+    signal = generate_signal(
+        price=price,
+        ema_20=ema20,
+        ema_50=ema50,
+        rsi=rsi,
+        macd=macd,
+        macd_signal=macd_signal,
+        atr=atr,
+        adx=adx,
+    )
 
-    if price > ema20 and ema20 > ema50:
+    # Direction confirmation
+    if (
+        price > ema20
+        and ema20 > ema50
+        and macd > macd_signal
+    ):
         direction = "BULLISH"
-    elif price < ema20 and ema20 < ema50:
+
+    elif (
+        price < ema20
+        and ema20 < ema50
+        and macd < macd_signal
+    ):
         direction = "BEARISH"
+
     else:
         direction = "NEUTRAL"
 
@@ -165,11 +203,17 @@ def analyze_timeframe(symbol, timeframe):
         "timeframe": timeframe,
         "direction": direction,
         "price": price,
+
         "indicators": {
             "ema_20": ema20,
             "ema_50": ema50,
             "rsi": rsi,
+            "macd": macd,
+            "macd_signal": macd_signal,
+            "atr": atr,
+            "adx": adx,
         },
+
         "signal": signal,
         "candle_confirmation": "CLOSED_CANDLES_ONLY",
     }
@@ -177,19 +221,21 @@ def analyze_timeframe(symbol, timeframe):
 
 def safe_number(value):
     try:
-        return float(value)
+        number = float(value)
+
+        if not math.isfinite(number):
+            return None
+
+        return number
+
     except (TypeError, ValueError):
         return None
 
 
 def build_participant_summary(participant_data):
     """
-    NSE participant-wise daily OI ka summary.
-    Net index futures aur net index options ko alag rakhta hai.
-
-    Net index options ko direct bullish/bearish signal nahi maana gaya,
-    kyunki combined call aur put positions directional interpretation
-    ke liye kaafi nahi hain.
+    NSE participant-wise daily OI summary.
+    Net index futures aur net index options alag rakhta hai.
     """
 
     if not isinstance(participant_data, dict):
@@ -212,7 +258,9 @@ def build_participant_summary(participant_data):
     participants = {}
 
     for row in rows:
-        name = str(row.get("participant", "")).upper().strip()
+        name = str(
+            row.get("participant", "")
+        ).upper().strip()
 
         if name not in ["FII", "DII", "PRO", "CLIENT"]:
             continue
@@ -235,48 +283,43 @@ def build_participant_summary(participant_data):
             ),
         }
 
+    def get_position(value):
+        if value is None:
+            return "UNKNOWN"
+
+        if value > 0:
+            return "NET_LONG"
+
+        if value < 0:
+            return "NET_SHORT"
+
+        return "NEUTRAL"
+
     fii = participants.get("FII", {})
-    fii_net_futures = fii.get("net_index_futures")
-
-    if fii_net_futures is None:
-        fii_futures_position = "UNKNOWN"
-    elif fii_net_futures > 0:
-        fii_futures_position = "NET_LONG"
-    elif fii_net_futures < 0:
-        fii_futures_position = "NET_SHORT"
-    else:
-        fii_futures_position = "NEUTRAL"
-
     dii = participants.get("DII", {})
-    dii_net_futures = dii.get("net_index_futures")
 
-    if dii_net_futures is None:
-        dii_futures_position = "UNKNOWN"
-    elif dii_net_futures > 0:
-        dii_futures_position = "NET_LONG"
-    elif dii_net_futures < 0:
-        dii_futures_position = "NET_SHORT"
-    else:
-        dii_futures_position = "NEUTRAL"
+    fii_net = fii.get("net_index_futures")
+    dii_net = dii.get("net_index_futures")
 
     return {
         "status": "CONNECTED",
         "date": participant_data.get("date"),
         "unit": participant_data.get("unit", "contracts"),
         "participants": participants,
+
         "interpretation": {
-            "fii_index_futures": fii_futures_position,
-            "dii_index_futures": dii_futures_position,
-            "fii_net_index_futures": fii_net_futures,
-            "dii_net_index_futures": dii_net_futures,
+            "fii_index_futures": get_position(fii_net),
+            "dii_index_futures": get_position(dii_net),
+            "fii_net_index_futures": fii_net,
+            "dii_net_index_futures": dii_net,
             "options_direction": "NOT_DETERMINED",
         },
+
         "note": (
-            "Participant-wise figures are daily aggregate derivative "
-            "positions. Index futures may include multiple indices; "
-            "they are not NIFTY-only or SENSEX-only positions. "
-            "Net index options combines calls and puts and is not "
-            "a standalone bullish/bearish indicator."
+            "Participant-wise figures are daily aggregate "
+            "derivative positions. Index futures may include "
+            "multiple indices; they are not NIFTY-only or "
+            "SENSEX-only positions."
         ),
     }
 
@@ -293,11 +336,13 @@ def get_institutional_summary(symbol):
         report_date = None
 
         for row in rows:
-            category = str(row.get("category", "")).upper()
+            category = str(
+                row.get("category", "")
+            ).upper()
 
-            try:
-                net = float(row.get("net_value_cr") or 0)
-            except (TypeError, ValueError):
+            net = safe_number(row.get("net_value_cr"))
+
+            if net is None:
                 continue
 
             if "FII" in category or "FPI" in category:
@@ -310,10 +355,13 @@ def get_institutional_summary(symbol):
 
         if fii_net is None or dii_net is None:
             fii_dii_bias = "UNKNOWN"
+
         elif fii_net > 0 and dii_net > 0:
             fii_dii_bias = "BOTH_BUYING"
+
         elif fii_net < 0 and dii_net < 0:
             fii_dii_bias = "BOTH_SELLING"
+
         else:
             fii_dii_bias = "MIXED"
 
@@ -325,8 +373,11 @@ def get_institutional_summary(symbol):
 
         if symbol == "NIFTY":
             for pcr_symbol, value in pcr_data.items():
-                if re.match(r"^NIFTY\d.*FUT$", pcr_symbol.upper()):
-                    nifty_pcr = value
+                if re.match(
+                    r"^NIFTY\d.*FUT$",
+                    pcr_symbol.upper()
+                ):
+                    nifty_pcr = safe_number(value)
                     nifty_pcr_symbol = pcr_symbol
                     break
 
@@ -350,19 +401,26 @@ def get_institutional_summary(symbol):
                 ],
             }
 
-        participant_data = data.get("participant_positions", {})
+        participant_data = data.get(
+            "participant_positions", {}
+        )
+
         participant_summary = build_participant_summary(
             participant_data
         )
 
         return {
             "fii_dii": {
-                "status": fii_data.get("status", "UNAVAILABLE"),
+                "status": fii_data.get(
+                    "status",
+                    "UNAVAILABLE"
+                ),
                 "date": report_date,
                 "fii_net_cr": fii_net,
                 "dii_net_cr": dii_net,
                 "bias": fii_dii_bias,
             },
+
             "pcr": {
                 "status": (
                     angel.get("pcr_status", "UNAVAILABLE")
@@ -372,9 +430,11 @@ def get_institutional_summary(symbol):
                 "symbol": nifty_pcr_symbol,
                 "value": nifty_pcr,
             },
+
             "oi_buildup": {
                 "status": angel.get(
-                    "oi_buildup_status", "UNAVAILABLE"
+                    "oi_buildup_status",
+                    "UNAVAILABLE"
                 ),
                 "categories": oi_summary,
                 "note": (
@@ -382,6 +442,7 @@ def get_institutional_summary(symbol):
                     "not direct NIFTY or SENSEX index OI."
                 ),
             },
+
             "participant_positions": participant_data,
             "participant_summary": participant_summary,
         }
@@ -477,6 +538,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             and fifteen_signal == "CALL BIAS"
         ):
             final_signal = "CALL BIAS"
+
             reason = (
                 "Daily, 1-hour aur 15-minute teeno "
                 "CALL direction confirm kar rahe hain."
@@ -491,6 +553,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             and fifteen_signal == "PUT BIAS"
         ):
             final_signal = "PUT BIAS"
+
             reason = (
                 "Daily, 1-hour aur 15-minute teeno "
                 "PUT direction confirm kar rahe hain."
@@ -499,6 +562,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
         entry = None
         stop_loss = None
         target = None
+        risk_reward = None
 
         exit_condition = (
             "WAIT: clear confirmation ka intezar karein."
@@ -508,6 +572,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
             entry = fifteen["signal"].get("entry")
             stop_loss = fifteen["signal"].get("stop_loss")
             target = fifteen["signal"].get("target")
+            risk_reward = fifteen["signal"].get("risk_reward")
 
             if final_signal == "CALL BIAS":
                 exit_condition = (
@@ -516,6 +581,7 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                     "candle EMA20 ke neeche close ho to "
                     "position dobara evaluate karein."
                 )
+
             else:
                 exit_condition = (
                     "Stop-loss hit hone par exit karein, "
@@ -529,10 +595,12 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "direction": daily_direction,
                 "signal": daily_signal,
             },
+
             "one_hour": {
                 "direction": hourly_direction,
                 "signal": hourly_signal,
             },
+
             "fifteen_minute": {
                 "direction": fifteen_direction,
                 "signal": fifteen_signal,
@@ -541,17 +609,23 @@ def combined_market_analysis(symbol: str = "NIFTY"):
 
         return {
             "symbol": symbol,
+
             "signal": final_signal,
+
             "direction": (
                 "BULLISH" if final_signal == "CALL BIAS"
                 else "BEARISH" if final_signal == "PUT BIAS"
                 else "NEUTRAL"
             ),
+
             "entry": entry,
             "stop_loss": stop_loss,
             "target": target,
+            "risk_reward": risk_reward,
+
             "exit_condition": exit_condition,
             "reason": reason,
+
             "confirmation": confirmation,
             "institutional": institutional,
 
@@ -561,6 +635,11 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                 "fifteen_minute": (
                     "Entry and risk levels using closed candles"
                 ),
+                "ema": "Trend confirmation",
+                "rsi": "Momentum confirmation",
+                "macd": "Momentum direction confirmation",
+                "adx": "Trend strength confirmation",
+                "atr": "Volatility-based risk levels",
                 "fii_dii": "Daily supporting context",
                 "pcr": (
                     "Supporting options context, "
@@ -571,8 +650,8 @@ def combined_market_analysis(symbol: str = "NIFTY"):
                     "not direct index trigger"
                 ),
                 "participant_positions": (
-                    "Daily participant-wise derivative positioning. "
-                    "Supporting context only, not a standalone signal."
+                    "Daily aggregate derivative positioning. "
+                    "Supporting context only."
                 ),
             },
 
