@@ -29,20 +29,22 @@ INTERVALS = {
 
 _api = None
 _api_time = 0
+
 _api_lock = Lock()
 _request_lock = Lock()
+
 _last_request = 0
 _blocked_until = 0
 
 _cache = {}
 
+# Angel One FULL quote timestamp fields
 TIMESTAMP_KEYS = {
-    "exchangetimestamp",
     "exchfeedtime",
     "exchtradetime",
-    "exchtradetime",
-    "lasttradetimestamp",
+    "exchangetimestamp",
     "lasttradetime",
+    "lasttradetimestamp",
     "timestamp",
     "tradetimestamp",
     "feedtime",
@@ -84,16 +86,30 @@ def api_request(function):
             result = function()
             _last_request = time.time()
 
-            if not isinstance(result, dict) or not result.get("status"):
-                raise RuntimeError("Angel One request failed")
+            if not isinstance(result, dict):
+                raise RuntimeError(
+                    "Invalid Angel One response"
+                )
+
+            if not result.get("status"):
+                raise RuntimeError(
+                    result.get("message")
+                    or result.get("error")
+                    or "Angel One request failed"
+                )
 
             return result
 
         except Exception as error:
             _last_request = time.time()
+
             message = str(error).lower()
 
-            if "access denied" in message or "rate" in message:
+            if (
+                "access denied" in message
+                or "rate" in message
+                or "too many" in message
+            ):
                 _blocked_until = time.time() + 60
 
             raise
@@ -101,9 +117,8 @@ def api_request(function):
 
 def normalize_timestamp(value):
     """
-    Exchange timestamp ko ISO format mein convert karta hai.
-    Server ka current time exchange timestamp ke roop mein
-    kabhi use nahi kiya jata.
+    Actual broker timestamp ko IST ISO format mein convert karta hai.
+    Server ka current time exchange timestamp nahi banaya jata.
     """
 
     if value is None:
@@ -113,13 +128,22 @@ def normalize_timestamp(value):
         try:
             stamp = float(value)
 
+            # Milliseconds ko seconds mein convert karein.
             if stamp > 100000000000:
                 stamp = stamp / 1000
 
-            return datetime.fromtimestamp(
-                stamp, tz=IST
-            ).isoformat()
-        except (ValueError, OSError, OverflowError):
+            parsed = datetime.fromtimestamp(
+                stamp,
+                tz=IST
+            )
+
+            return parsed.isoformat()
+
+        except (
+            ValueError,
+            OSError,
+            OverflowError
+        ):
             return None
 
     if not isinstance(value, str):
@@ -130,6 +154,7 @@ def normalize_timestamp(value):
     if not value:
         return None
 
+    # ISO timestamp
     try:
         parsed = datetime.fromisoformat(
             value.replace("Z", "+00:00")
@@ -138,7 +163,7 @@ def normalize_timestamp(value):
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=IST)
 
-        return parsed.isoformat()
+        return parsed.astimezone(IST).isoformat()
 
     except ValueError:
         pass
@@ -155,7 +180,11 @@ def normalize_timestamp(value):
     for fmt in formats:
         try:
             parsed = datetime.strptime(value, fmt)
-            return parsed.replace(tzinfo=IST).isoformat()
+
+            return parsed.replace(
+                tzinfo=IST
+            ).isoformat()
+
         except ValueError:
             continue
 
@@ -164,24 +193,39 @@ def normalize_timestamp(value):
 
 def find_exchange_timestamp(data):
     """
-    Angel One response mein exchange timestamp ko
-    nested dictionaries mein bhi search karta hai.
+    FULL quote mein exchange feed/trade timestamp dhoondhta hai.
+    Feed time ko priority deta hai.
     """
 
     if not isinstance(data, dict):
         return None, None
 
-    for key, value in data.items():
-        normalized_key = (
-            str(key).lower().replace("_", "").replace("-", "")
-        )
+    # Pehle preferred timestamp fields check karein.
+    preferred_keys = [
+        "exchFeedTime",
+        "exchTradeTime",
+        "exchangeTimestamp",
+        "lastTradeTime",
+        "lastTradeTimestamp",
+        "timestamp",
+        "tradeTimestamp",
+        "feedTime",
+    ]
 
-        if normalized_key in TIMESTAMP_KEYS and value:
-            normalized = normalize_timestamp(value)
+    for preferred in preferred_keys:
+        for key, value in data.items():
 
-            if normalized:
-                return normalized, key
+            if str(key).lower().replace("_", "").replace("-", "") != (
+                preferred.lower()
+            ):
+                continue
 
+            timestamp = normalize_timestamp(value)
+
+            if timestamp:
+                return timestamp, key
+
+    # Nested dictionaries mein bhi search.
     for value in data.values():
         if isinstance(value, dict):
             timestamp, source = find_exchange_timestamp(value)
@@ -231,37 +275,69 @@ def get_market_quote(symbol="NIFTY"):
         item = SYMBOLS[symbol]
         api = get_api()
 
+        # Angel One FULL Market Data request
         result = api_request(
-            lambda: api.ltpData(
-                item["exchange"],
-                item["tradingsymbol"],
-                item["token"]
+            lambda: api.getMarketData(
+                "FULL",
+                {
+                    item["exchange"]: [
+                        item["token"]
+                    ]
+                }
             )
         )
 
-        raw_data = result.get("data")
+        response_data = result.get("data") or {}
 
-        if not isinstance(raw_data, dict):
+        fetched = response_data.get("fetched") or []
+
+        if not isinstance(fetched, list):
             raise RuntimeError(
-                "Angel One quote data missing or invalid"
+                "Invalid FULL quote response"
+            )
+
+        raw_data = None
+
+        # Sirf requested token ka data lena hai.
+        for quote in fetched:
+            if not isinstance(quote, dict):
+                continue
+
+            if str(
+                quote.get("symbolToken", "")
+            ) == item["token"]:
+                raw_data = quote
+                break
+
+        if raw_data is None:
+            unfetched = response_data.get("unfetched") or []
+
+            raise RuntimeError(
+                "Requested symbol quote not found. "
+                f"Unfetched: {unfetched}"
             )
 
         exchange_timestamp, timestamp_source = (
             find_exchange_timestamp(raw_data)
         )
 
+        # FULL response mein ltp hota hai.
+        # Main.py ke existing quote structure ke liye
+        # data field mein raw quote rakha gaya hai.
         data = {
             "connected": True,
             "symbol": symbol,
             "data": raw_data,
 
-            # Sirf actual broker exchange timestamp.
-            # Missing hone par None rahega.
             "exchange_timestamp": exchange_timestamp,
             "timestamp": exchange_timestamp,
 
             "quote_timestamp_source": timestamp_source,
-            "quote_received_at": datetime.now(IST).isoformat(),
+            "market_data_mode": "FULL",
+
+            "quote_received_at": datetime.now(
+                IST
+            ).isoformat()
         }
 
         _cache[cache_key] = {
@@ -279,7 +355,10 @@ def get_market_quote(symbol="NIFTY"):
         }
 
 
-def get_historical_candles(symbol="NIFTY", timeframe="15m"):
+def get_historical_candles(
+    symbol="NIFTY",
+    timeframe="15m"
+):
     symbol = symbol.upper()
 
     if symbol not in SYMBOLS:
@@ -298,6 +377,7 @@ def get_historical_candles(symbol="NIFTY", timeframe="15m"):
 
     item = SYMBOLS[symbol]
     api = get_api()
+
     now_ist = datetime.now(IST)
 
     days = {
@@ -310,10 +390,14 @@ def get_historical_candles(symbol="NIFTY", timeframe="15m"):
         "exchange": item["exchange"],
         "symboltoken": item["token"],
         "interval": INTERVALS[timeframe],
+
         "fromdate": (
             now_ist - timedelta(days=days)
         ).strftime("%Y-%m-%d 09:00"),
-        "todate": now_ist.strftime("%Y-%m-%d 15:30")
+
+        "todate": now_ist.strftime(
+            "%Y-%m-%d 15:30"
+        )
     }
 
     result = api_request(
@@ -325,17 +409,25 @@ def get_historical_candles(symbol="NIFTY", timeframe="15m"):
     data = []
 
     for candle in candles:
-        if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+
+        if (
+            not isinstance(candle, (list, tuple))
+            or len(candle) < 6
+        ):
             continue
 
-        data.append({
-            "time": candle[0],
-            "open": float(candle[1]),
-            "high": float(candle[2]),
-            "low": float(candle[3]),
-            "close": float(candle[4]),
-            "volume": float(candle[5])
-        })
+        try:
+            data.append({
+                "time": candle[0],
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5])
+            })
+
+        except (TypeError, ValueError):
+            continue
 
     _cache[cache_key] = {
         "time": time.time(),
